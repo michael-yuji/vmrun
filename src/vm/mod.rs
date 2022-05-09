@@ -54,9 +54,55 @@ pub struct VmRun {
 
 impl VmRun {
 
-    pub fn requirements(&self) -> Vec<Requirement> {
+    pub fn preconditions(&self) -> Vec<Requirement> {
         self.emulations.clone().into_iter()
-            .map(|e| e.emulation.requirements().into_iter()).flatten().collect()
+            .map(|e| e.emulation.preconditions().into_iter()).flatten().collect()
+    }
+
+    pub fn ephemeral_objects(&self) -> Vec<Resource> {
+        self.emulations.clone().into_iter()
+            .map(|e| e.emulation.ephemeral_objects().into_iter()).flatten()
+            .collect()
+    }
+
+    pub fn bhyve_conf_opts(&self) -> Result<Vec<String>> {
+        let mut opts: Vec<String> = Vec::new();
+
+        let mut has_lpc = false;
+
+        let mut push_yesno = |cond: bool, key: &'static str, value: bool| {
+            if cond { opts.push(format!("{}={}", key, value)); }
+        };
+
+        push_yesno(self.generate_acpi,  "acpi_tables", true);
+        push_yesno(self.wire_guest_mem, "memory.wired", true);
+        push_yesno(self.yield_on_hlt,   "x86.vmexit_on_hlt", true);
+        push_yesno(self.force_msi,      "virtio_msix", false);
+        push_yesno(self.disable_mptable_gen, "x86.mptable", false);
+        push_yesno(self.utc_clock,      "rtc.use_localtime", false);
+        push_yesno(self.power_off_destroy_vm, "destroy_on_poweroff", true);
+
+        opts.push(format!("memory.size={}K", self.mem_kb));
+        opts.extend(self.cpu.to_bhyve_conf());
+
+        for emulation in self.emulations.iter() {
+            if emulation.is_lpc() {
+                has_lpc = true;
+            }
+
+            opts.extend(emulation.to_bhyve_conf());
+        }
+
+        if !(has_lpc || self.lpc_devices.is_empty()) {
+            return Err(VmError::NoLpc);
+        }
+
+        for lpc in &self.lpc_devices {
+            opts.extend(lpc.to_bhyve_conf());
+        }
+
+        opts.push(format!("name={}", self.name));
+        Ok(opts)
     }
 
     pub fn bhyve_args(&self) -> Result<Vec<String>> {
@@ -123,7 +169,22 @@ pub enum LpcDevice {
     TestDev
 }
 
-impl LpcDevice {
+impl LpcDevice
+{
+    fn to_bhyve_conf(&self) -> Vec<String> {
+        match self {
+            LpcDevice::TestDev => vec!["lpc.pc-testdev=true".to_string()],
+            LpcDevice::Com(i, node) => vec![format!("lpc.com{}.device={}", i, node)],
+            LpcDevice::Bootrom(bootrom, bootvars) => {
+                let mut lines = vec![format!("lpc.bootrom={}", bootrom)];
+                if let Some(vars) = bootvars {
+                    lines.push(format!("lpc.bootvars={}", vars));
+                }
+                lines
+            }
+        }
+    }
+
     fn to_bhyve_arg(&self) -> String {
         match self {
             LpcDevice::Com(i, val) => format!("com{},{}", i, val),
@@ -142,7 +203,8 @@ impl LpcDevice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resource {
     Iface(String),
-    FsItem(String)
+    FsItem(String),
+    Node(String)
 }
 
 impl Resource {
@@ -150,6 +212,7 @@ impl Resource {
     pub fn exists(&self) -> bool {
         match self {
             Resource::FsItem(path) => std::path::Path::new(path.as_str()).exists(),
+            Resource::Node(node) => std::path::Path::new(node.as_str()).exists(),
             /// TODO: Handle network interface existence logic
             Resource::Iface(_)     => true
         }
@@ -159,6 +222,8 @@ impl Resource {
         match self {
             Resource::FsItem(path) => 
                 std::fs::remove_file(path).map_err(|e| VmError::IOError(e)),
+            Resource::Node(node) =>
+                std::fs::remove_file(node).map_err(|e| VmError::IOError(e)),
             _ => Ok(())
         }
     }
@@ -168,55 +233,44 @@ impl std::string::ToString for Resource {
     fn to_string(&self) -> String {
         match self {
             Resource::Iface(iface) => format!("network interface: ({})",iface),
-            Resource::FsItem(path) => format!("file: ({})", path)
+            Resource::FsItem(path) => format!("file: ({})", path),
+            Resource::Node(node)   => format!("node: ({})", node)
         }
     }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub enum CleanupSemantic {
-    /// If the resource is created by the VM, such resource should be removed
-    /// after the VM exits.
-    Borrow,
-    /// Always remove the resource regardless if it exists before the VM boot
-    Always,
-    /// Never cleanup
-    Never
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Requirement {
-    ExistsResource(Resource),
-    Nonexistence(Resource),
-    MayCreate(Resource, CleanupSemantic)
+    Exists(Resource),
+    Nonexists(Resource)
 }
 
 impl Requirement {
     pub fn warning(&self) -> String {
         match self {
-            Requirement::ExistsResource(resource) => 
+            Requirement::Exists(resource) => 
                 format!("Require existence of {}", resource.to_string()),
-            Requirement::Nonexistence(resource)   => 
-                format!("Require nonexistence of {}", resource.to_string()),
-            Requirement::MayCreate(resource, _) =>
-                format!("May create {}", resource.to_string())
+            Requirement::Nonexists(resource)   => 
+                format!("Require nonexistence of {}", resource.to_string())
         }
     }
 
     pub fn is_satisfied(&self) -> bool {
         match self {
-            Requirement::ExistsResource(res) => res.exists(),
-            Requirement::Nonexistence(res)   => !res.exists(),
-            _ => true
+            Requirement::Exists(res) => res.exists(),
+            Requirement::Nonexists(res)   => !res.exists()
         }
     }
 }
 
 pub trait EmulatedPci: Sized {
     fn as_raw(&self) -> RawEmulatedPci;
-    fn requirements(&self) -> Vec<Requirement> {
+    fn preconditions(&self) -> Vec<Requirement> {
+        vec![]
+    }
+
+    fn ephemeral_objects(&self) -> Vec<Resource> {
         vec![]
     }
 }
@@ -229,8 +283,11 @@ pub enum EmulationOption {
 
 #[derive(Debug, Clone)]
 pub struct RawEmulatedPci {
+    /// Name when use with "legacy config"
     pub frontend: String,
-    pub backend:  Option<String>,
+    /// Name when use with new bhyve_config
+    pub device:   String,
+    pub backend:  Option<(String, String)>,
     pub options:  Vec<EmulationOption>
 }
 
@@ -241,11 +298,33 @@ impl EmulatedPci for RawEmulatedPci {
 }
 
 impl EmulatedPciDevice {
+    fn to_bhyve_conf(&self) -> Vec<String> {
+        let prefix = format!("pci.{}.{}.{}", 
+                             self.slot.bus, self.slot.slot, self.slot.func);
+        let mut opts: Vec<String> = Vec::new();
+        opts.push(format!("{}.device={}", prefix, self.emulation.frontend));
+
+        if let Some((key, value)) = &self.emulation.backend {
+            opts.push(format!("{}.{}={}", prefix, key, value));
+        }
+
+        for option in self.emulation.options.iter() {
+            match option {
+                EmulationOption::On(flag) => 
+                    opts.push(format!("{}.{}=true", prefix, flag)),
+                EmulationOption::KeyValue(key, value) =>
+                    opts.push(format!("{}.{}={}", prefix, key, value))
+            };
+        }
+
+        opts
+    }
+
     fn to_bhyve_arg(&self) -> String {
         let mut ret = 
             format!("{},{}", self.slot.to_bhyve_arg(), self.emulation.frontend);
 
-        if let Some(backend) = &self.emulation.backend {
+        if let Some((_, backend)) = &self.emulation.backend {
             ret.extend(format!(",{}", backend).chars());
         }
 
@@ -290,6 +369,7 @@ impl FromStr for RawEmulatedPci {
 
         Ok(RawEmulatedPci {
             frontend: frontend.to_string(),
+	    device:   frontend.to_string(),
             backend: None,
             options
         })
@@ -328,6 +408,14 @@ impl CpuSpec {
         } else {
             format!("sockets={},threads={},cores={}", self.sockets, self.cores, self.threads)
         }
+    }
+
+    fn to_bhyve_conf(&self) -> Vec<String> {
+        vec![
+            format!("sockets={}", self.sockets),
+            format!("cores={}",   self.cores),
+            format!("threads={}", self.threads)
+        ]
     }
 }
 

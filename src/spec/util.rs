@@ -9,14 +9,6 @@ pub struct PciSlotGenerator {
     skip: Vec<PciSlot>
 }
 
-impl Iterator for PciSlotGenerator {
-    type Item = PciSlot;
-    
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_slot()
-    }
-}
-
 impl PciSlotGenerator
 {
     pub fn build(bus: u8, slot: u8, skip: Vec<PciSlot>) -> PciSlotGenerator {

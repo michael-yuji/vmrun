@@ -1,5 +1,5 @@
 use crate::vm::{ EmulatedPci, RawEmulatedPci, EmulationOption, Resource
-               , Requirement, CleanupSemantic};
+               , Requirement};
 
 #[derive(Debug, Clone, Copy)]
 pub enum VirtioNetBackend {
@@ -18,7 +18,9 @@ pub struct VirtioNet {
 impl EmulatedPci for VirtioNet
 {
     fn as_raw(&self) -> RawEmulatedPci {
+
         let mut options = vec![];
+
         if let Some(mtu) = self.mtu {
             options.push(
                 EmulationOption::KeyValue("mtu".to_string(), mtu.to_string()));
@@ -29,9 +31,19 @@ impl EmulatedPci for VirtioNet
                 EmulationOption::KeyValue("mac".to_string(), mac.to_string()));
         }
 
+        let tpe = match self.tpe {
+            VirtioNetBackend::Tap => "tap",
+            VirtioNetBackend::Netgraph => "netgraph",
+            VirtioNetBackend::Netmap => "netmap"
+        };
+
+        options.push(
+            EmulationOption::KeyValue("type".to_string(), tpe.to_string()));
+
         RawEmulatedPci {
             frontend: "virtio-net".to_string(),
-            backend:  Some(self.name.to_string()),
+            device:   "virtio-net".to_string(),
+            backend:  Some(("backend".to_string(), self.name.to_string())),
             options
         }
     }
@@ -55,7 +67,7 @@ macro_rules! options_push_kv {
 }
 #[derive(Debug, Clone)]
 pub struct VirtioBlk {
-    pub device: String,
+    pub path: String,
     pub nocache: bool,
     pub direct: bool,
     pub ro: bool,
@@ -66,9 +78,8 @@ pub struct VirtioBlk {
 
 impl EmulatedPci for VirtioBlk
 {
-    fn requirements(&self) -> Vec<Requirement> {
-        vec![Requirement::MayCreate(
-            Resource::FsItem(self.device.to_string()), CleanupSemantic::Never)]
+    fn preconditions(&self) -> Vec<Requirement> {
+        vec![Requirement::Exists(Resource::FsItem(self.path.to_string()))]
     }
 
     fn as_raw(&self) -> RawEmulatedPci {
@@ -84,12 +95,13 @@ impl EmulatedPci for VirtioBlk
                     None => format!("{}", logical)
                 };
             options.push(EmulationOption::KeyValue(
-                    "sectiorsize".to_string(), value));
+                    "sectorsize".to_string(), value));
         }
 
         RawEmulatedPci {
             frontend: "virtio-blk".to_string(),
-            backend:  Some(self.device.to_string()),
+            device:   "virtio-blk".to_string(),
+            backend:  Some(("path".to_string(), self.path.to_string())),
             options
         }
     }
@@ -99,7 +111,7 @@ macro_rules! mk_ahci_frontend {
     ($name:ident, $value:literal) => {
         #[derive(Debug, Clone)]
         pub struct $name {
-            pub device: String,
+            pub path: String,
             pub nmrr:   Option<u32>,
             pub ser:    Option<String>,
             pub rev:    Option<String>,
@@ -108,9 +120,9 @@ macro_rules! mk_ahci_frontend {
 
         impl EmulatedPci for $name {
 
-            fn requirements(&self) -> Vec<Requirement> {
-                vec![Requirement::ExistsResource(
-                    Resource::FsItem(self.device.to_string()))]
+            fn preconditions(&self) -> Vec<Requirement> {
+                vec![Requirement::Exists(
+                    Resource::FsItem(self.path.to_string()))]
             }
 
             fn as_raw(&self) -> RawEmulatedPci {
@@ -123,7 +135,8 @@ macro_rules! mk_ahci_frontend {
 
                 RawEmulatedPci {
                     frontend: $value.to_string(),
-                    backend:  Some(self.device.to_string()),
+                    device:   "ahci".to_string(),
+                    backend:  Some(("path".to_string(), self.path.to_string())),
                     options
                 }
             }
@@ -140,13 +153,16 @@ pub struct VirtioConsole {
 
 impl EmulatedPci for VirtioConsole {
 
-    fn requirements(&self) -> Vec<Requirement> {
+    fn preconditions(&self) -> Vec<Requirement> {
         self.ports.iter()
-            .map(|port| Requirement::ExistsResource(
+            .map(|port| Requirement::Nonexists(
                     Resource::FsItem(port.to_string()))
                 )
             .collect()
+    }
 
+    fn ephemeral_objects(&self) -> Vec<Resource> {
+        self.ports.iter().map(|port| Resource::Node(port.to_string())).collect()
     }
 
     fn as_raw(&self) -> RawEmulatedPci {
@@ -159,6 +175,7 @@ impl EmulatedPci for VirtioConsole {
 
         RawEmulatedPci {
             frontend: "virtio-console".to_string(),
+            device:   "virtio-console".to_string(),
             backend:  None,
             options
         }
@@ -191,10 +208,11 @@ impl EmulatedPci for Framebuffer {
             format!("{}", self.host)
         };
 
-        options.push(EmulationOption::KeyValue("tcp".to_string(), rfb));
+        options.push(EmulationOption::KeyValue("rfb".to_string(), rfb));
 
         RawEmulatedPci {
             frontend: "fbuf".to_string(),
+            device:   "fbuf".to_string(),
             backend: None,
             options
         }
@@ -209,8 +227,9 @@ impl EmulatedPci for Xhci {
     fn as_raw(&self) -> RawEmulatedPci {
         RawEmulatedPci {
             frontend: "xhci".to_string(),
-            backend: Some("tablet".to_string()),
-            options: vec![]
+            device:   "xhci".to_string(),
+            backend:  Some(("slot.1.device".to_string(), "tablet".to_string())),
+            options:  vec![]
         }
     }
 }

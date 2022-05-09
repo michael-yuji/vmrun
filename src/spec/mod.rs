@@ -222,6 +222,7 @@ impl VmSpec
             slot: hostbdg_slot, 
             emulation: RawEmulatedPci { 
                 frontend: "hostbridge".to_string(), 
+        device:   "hostbridge".to_string(),
                 backend: None, 
                 options: vec![]
             }
@@ -231,6 +232,7 @@ impl VmSpec
             slot: lpc_slot, 
             emulation: RawEmulatedPci { 
                 frontend: "lpc".to_string(), 
+        device:   "lpc".to_string(),
                 backend: None, 
                 options: vec![]
             }
@@ -248,21 +250,21 @@ impl VmSpec
                 slot: the_slot, emulation: emulation.to_vm_emu()? });
         }
 
-	if let Some(com) = &self.com1 {
-		lpcs.push(LpcDevice::Com(1, com.to_string()));
-	}
+        if let Some(com) = &self.com1 {
+            lpcs.push(LpcDevice::Com(1, com.to_string()));
+        }
 
-	if let Some(com) = &self.com2 {
-		lpcs.push(LpcDevice::Com(2, com.to_string()));
-	}
+        if let Some(com) = &self.com2 {
+            lpcs.push(LpcDevice::Com(2, com.to_string()));
+        }
 
-	if let Some(com) = &self.com3 {
-		lpcs.push(LpcDevice::Com(3, com.to_string()));
-	}
+        if let Some(com) = &self.com3 {
+            lpcs.push(LpcDevice::Com(3, com.to_string()));
+        }
 
-	if let Some(com) = &self.com4 {
-		lpcs.push(LpcDevice::Com(4, com.to_string()));
-	}
+        if let Some(com) = &self.com4 {
+            lpcs.push(LpcDevice::Com(4, com.to_string()));
+        }
 
         if let Some(graphic) = &self.graphic {
             let slot = slot_gen.next_slot().ok_or(FormatError::RunOutOfSlots)?;

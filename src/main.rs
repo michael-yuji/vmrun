@@ -4,16 +4,18 @@ mod spec;
 mod util;
 
 use clap::Parser;
-use vm::{VmError, Requirement, Resource, CleanupSemantic};
+use vm::{VmError};
 use spec::FormatError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 enum VmRunError {
-	#[error("vmerror::{0}")]
-	VmErr(VmError),
-	#[error("format_error::{0}")]
-	SErr(FormatError),
+    #[error("vmerror::{0}")]
+    VmErr(VmError),
+    #[error("format_error::{0}")]
+    SpecErr(FormatError),
+    #[error("One of more precondition failed: {0}")]
+    PreconditionFailure(String)
 }
 
 /* To work around clap */
@@ -78,43 +80,28 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
     let mut reboot_count = 0;
     let mut next_target = args.target.clone();
 
-    let mut created_resource: Vec<Resource> = Vec::new();
-
     loop {
+
         /* if the current target specified next target to run */
         if let Some(target) = &next_target {
-	        /*
-	         * The root config itself is the default target unless another
-	         * target named "default" explicitly defined
-	         */
+            /*
+             * The root config itself is the default target unless another
+             * target named "default" explicitly defined
+             */
             if target == "default" && !spec.has_target(target) {
-	            spec = vm.clone();
-	        } else {
-	            spec.consume_target(target).map_err(|e| VmRunError::SErr(e))?;
-	        }
+                spec = vm.clone();
+            } else {
+                spec.consume_target(target).map_err(|e| VmRunError::SpecErr(e))?;
+            }
         }
 
         next_target = spec.next_target.clone();
 
-        let vmrun = spec.build().map_err(|e| VmRunError::SErr(e))?;
+        let vmrun = spec.build().map_err(|e| VmRunError::SpecErr(e))?;
 
-
-        for requirement in vmrun.requirements() {
-
+        for requirement in vmrun.preconditions() {
             if !requirement.is_satisfied() {
-                println!("warning: {}", requirement.warning());
-            }
-
-            /* 
-             * Bhyve sometimes may create resource, and if resource does not 
-             * exists prior to the creation of the VM and left over in the 
-             * system, we may want to clean it up
-             */
-            if let Requirement::MayCreate(
-                resource, CleanupSemantic::Borrow) = requirement {
-                if !(resource.exists() || created_resource.contains(&resource)) {
-                    created_resource.push(resource.clone());
-                }
+                return Err(VmRunError::PreconditionFailure(requirement.warning()));
             }
         }
 
@@ -127,11 +114,30 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
                 print!("{} ", arg);
             }
             println!();
+        
+        let cfs = vmrun.bhyve_conf_opts().map_err(|e| VmRunError::VmErr(e))?;
+        for cf in cfs.iter() {
+            println!("-o {}", cf);
+        }
             return Ok(());
         }
 
         let mut process = std::process::Command::new(hyve).args(&bootargs).spawn().ok().unwrap();
         let exit_status = process.wait().ok().unwrap();
+
+        for object in vmrun.ephemeral_objects() {
+            match object.release() {
+                Err(error) => {
+            if args.panic_on_failed_cleaup {
+                panic!("Error occured when cleaning up: {}", error);
+            } else {
+                println!("warn: Error occured when cleaning up: {}", error);
+            }
+        },
+        Ok(_) => continue
+        }
+    }
+
         let exit_code = exit_status.code().unwrap();
 
         /* if exit code is 0, it means the guest wanna reboot */
@@ -145,20 +151,6 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
         }
     };
     
-    for res in created_resource.iter() {
-        match res.release() {
-            Err(error) => {
-                if args.panic_on_failed_cleaup {
-                    panic!("Error occured while cleaning up: {}", error);
-                } else {
-                    println!("warn: Error occured while cleaning up: {}", error);
-
-                }
-            },
-            Ok(_) => continue 
-        }
-    }
-
     Ok(())
 }
 

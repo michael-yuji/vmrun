@@ -1,11 +1,12 @@
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::str::FromStr;
 use crate::spec::FormatError;
 use paste::paste;
 
 use crate::vm::{RawEmulatedPci, EmulatedPci, PciSlot};
 use crate::vm::emulation::{
+    VirtioNetBackend,
     VirtioNet,
     VirtioBlk, 
     VirtioConsole, 
@@ -13,33 +14,62 @@ use crate::vm::emulation::{
     AhciCd
 };
 
-#[derive(Deserialize, Debug)]
-#[serde(tag = "backend")]
-#[serde(remote = "crate::vm::emulation::VirtioNetBackend")]
-pub enum VirtioNetBackendDef {
-    #[serde(rename = "tap")]
-    Tap,
-    #[serde(rename = "netgraph")]
-    Netgraph,
-    #[serde(rename = "netmap")]
-    Netmap
+fn hmap_to_virtio_net<'de, D>(hmap: std::collections::HashMap<String, String>) 
+    -> Result<VirtioNet, D::Error>
+    where D: Deserializer<'de>
+{
+    let backend = hmap.get(&"name".to_string()).map(|s| s.as_str())
+        .ok_or(serde::de::Error::missing_field("name"))?;
+
+    let tpe = match hmap.get(&"type".to_string()) {
+        None =>
+            if backend.starts_with("tap") {
+                Ok(VirtioNetBackend::Tap)
+            } else if backend.starts_with("netgraph") {
+                Ok(VirtioNetBackend::Netgraph)
+            } else if backend.starts_with("netmap") {
+                Ok(VirtioNetBackend::Netmap)
+            } else {
+                Err(serde::de::Error::unknown_variant(
+                        backend, &["tap*", "netgraph*", "netmap*"]))
+            },
+        Some(tpe) =>
+            match tpe.as_str() {
+                "tap"      => Ok(VirtioNetBackend::Tap),
+                "netgraph" => Ok(VirtioNetBackend::Netgraph),
+                "netmap"   => Ok(VirtioNetBackend::Netmap),
+                _          => 
+                    Err(serde::de::Error::unknown_variant(tpe.as_str(), &["tap", "netgraph", "netmap"]))
+            }
+    }?;
+
+    let mtu = hmap.get(&"mtu".to_string()).and_then(|s| s.parse::<u32>().ok());
+    let mac = hmap.get(&"mac".to_string()).map(|s| s.to_string());
+
+    Ok(VirtioNet {
+        tpe,
+        name: backend.to_string(),
+        mtu,
+        mac
+    })
+
 }
 
-#[derive(Deserialize)]
-#[serde(remote = "crate::vm::emulation::VirtioNet")]
-pub struct VirtioNetDef {
-    #[serde(with = "VirtioNetBackendDef")]
-    #[serde(flatten)]
-    pub tpe:  crate::vm::emulation::VirtioNetBackend,
-    pub name: String,
-    pub mtu:  Option<u32>,
-    pub mac:  Option<String>
+impl<'de> Deserialize<'de> for VirtioNet
+{
+    fn deserialize<D>(deserializer: D) -> Result<VirtioNet, D::Error>
+        where D: Deserializer<'de>
+    {
+        type Hmap = std::collections::HashMap<String, String>;
+        let hmap = Hmap::deserialize(deserializer)?;
+        hmap_to_virtio_net::<'de, D>(hmap)
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(remote = "crate::vm::emulation::VirtioBlk")]
 pub struct VirtioBlkDef {
-    pub device: String,
+    pub path: String,
     #[serde(default = "crate::spec::no")]
     pub nocache: bool,
     #[serde(default = "crate::spec::no")]
@@ -58,7 +88,7 @@ macro_rules! impl_ahci {
             #[derive(Deserialize)]
             #[serde(remote = "crate::vm::emulation::" $name)]
             pub struct [<$name Def>] {
-                pub device: String,
+                pub path: String,
                 pub nmrr:  Option<u32>,
                 pub ser:   Option<String>,
                 pub rev:   Option<String>,
@@ -78,13 +108,12 @@ pub struct VirtioConsoleDef {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-#[serde(tag = "frontend")]
+#[serde(tag = "device")]
 pub enum Emulations {
     #[serde(rename = "virtio-console")]
     #[serde(with = "VirtioConsoleDef")]
     VirtioConsole(VirtioConsole),
 
-    #[serde(with = "VirtioNetDef")]
     #[serde(rename = "virtio-net")]
     VirtioNet(VirtioNet),
 

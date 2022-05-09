@@ -22,14 +22,14 @@ We also have an extra target "install", which contains an extra "ahci-cd" for mo
   "com1": "stdio",
   "bootrom": "/usr/local/share/uefi-firmware/BHYVE_UEFI.fd",
   "emulations": [
-    {"frontend": "virtio-net", "backend": "tap", "name": "tap3"},
-    {"frontend": "virtio-blk", "device": "disk.img"}
+    {"device": "virtio-net", "name": "tap3"},
+    {"device": "virtio-blk", "path": "disk.img"}
   ],
   "targets": {
     "install": {
       "emulations": [
-         { "frontend": "ahci-cd"
-         , "device": "FreeBSD-13.0-RELEASE-amd64-disc1.iso"
+         { "device": "ahci-cd"
+         , "path": "FreeBSD-13.0-RELEASE-amd64-disc1.iso"
          }
       ],
       "next_target": "default"
