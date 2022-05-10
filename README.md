@@ -7,8 +7,7 @@ The goal is to make bhyve
 - easier to integrate with other software.
 - easier to use and reduce accidential side effects. 
 
-*Another goal is to make bhyve more programmable and make it easier to write vm manager for FreeBSD Bhyve userland by providing a crate.*
-
+*Another goal is to make bhyve more programmable and make vm manager easier to write by providing a crate.*
 
 ## Features
 
@@ -23,6 +22,8 @@ The goal is to make bhyve
   - The `next_target` field define a target to be used when the current target reboots.
 - House keeping
   - Automatically cleanup ephemeral resources left by bhyve. For example `*.sock` left by `virtio-console`
+
+*Limited UCL support by using `uclcmd` to provide JSON representation is also supported*
  
 ## Configuration
 **An example configuration will be:**
@@ -53,14 +54,38 @@ We also have an extra target "install", which contains an extra "ahci-cd" for mo
 }
 ```
 
+Where `cpu` can either be a number, which expands to a single socket cpu with one core and 12 threads, or an object with three necessary fields `threads`, `cores`, `sockets`, the values of all 3 fields must be integer.
+
+`mem` can either be a string of format of `^[0-9]+(m|M|k|K|g|G|t|T)$`, or an integer represent the memory size with unit as **bytes** 
+
 Since the project is very young and the scheme of the configuration will likely change quite a bit and nowhere close to stable yet. The best reference is currently the source code (`src/spec/mod.rs`), hopefully the situation will be better soon. 
 
 ### Configure with UCL config files
-You can use UCL for configuration by piping the Json representation of the configuration file to the `stdin` (by using `-c-`) of this utility.
+UCL is the configuration format most used in FreeBSD. Native UCL is currently not supported.
+You can however still use UCL for configuration by piping the Json representation of the configuration file to the `stdin` (by using `-c-`) of this utility.
 
 For example: `uclcmd get -c -f myvm.conf | vmrun -c-`
 
-UCL is the configuration format most used in FreeBSD. Native UCL is currently not supported.
+Where a `myvm.conf` that is equivalent to the example json above will be
+```
+name: freebsd-test
+cpu: 2
+mem: 512M
+com1: stdio
+bootrom: /usr/local/share/uefi-firmware/BHYVE_UEFI.fd
+
+emulations: [
+  { device: virtio-net, name: tap3 },
+  { device: virtio-blk, path: disk.img }
+]
+
+targets install {
+  emulations: [
+    { device: ahci-cd, path: FreeBSD-13.0-RELEASE-amd64-disc1.iso }
+  ],
+  next_target: default
+}
+```
 
 *Unfortunately there is currently no plan to support UCL (at least not fully). This is 
 mostly because UCL itself is not currently a very consistent config format (try some edge cases yourself), and can introduce a lot of side effects. This go against the goal of this utility to be predictable on itself.*
