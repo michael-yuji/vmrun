@@ -463,9 +463,16 @@ impl <'de> Deserialize<'de> for MemorySpec {
     fn deserialize<D>(deserializer: D) -> Result<MemorySpec, D::Error>
         where D: Deserializer<'de>
     {
-        let str_value: String = String::deserialize(deserializer)?;
-        let kb = parse_mem_in_kb(&str_value).map_err(de::Error::custom)?;
-        Ok(MemorySpec { kb })
+        Either::<usize, String>::deserialize(deserializer).and_then(|either| {
+            match either {
+                Either::Left(num) => Ok(MemorySpec { kb: num/1000 }),
+                Either::Right(str_value) => {
+                    let kb = parse_mem_in_kb(&str_value)
+                        .map_err(de::Error::custom)?;
+                    Ok(MemorySpec { kb })
+                }
+            }
+        })
     }
 }
 
