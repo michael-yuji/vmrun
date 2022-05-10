@@ -6,6 +6,7 @@ mod util;
 use clap::Parser;
 use vm::{VmError};
 use spec::FormatError;
+use std::io::Read;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -60,7 +61,11 @@ struct Arguments {
 
     /// Do not proceed to other cleanup if any cleaup failed
     #[clap(long)]
-    panic_on_failed_cleaup: bool
+    panic_on_failed_cleaup: bool,
+
+    /// Dump the resultant configuration and exit
+    #[clap(long)]
+    debug: bool
 }
 
 fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
@@ -74,11 +79,12 @@ fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
     Ok(ArgVec { vec })
 }
 
-fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
+fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 {
     let mut spec = vm.clone();
     let mut reboot_count = 0;
     let mut next_target = args.target.clone();
+    let mut exit_code: i32 = 0;
 
     loop {
 
@@ -108,18 +114,23 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
         let bootargs = vmrun.bhyve_args().map_err(|e| VmRunError::VmErr(e))?;
         let hyve = std::option_env!("BHYVE_EXEC").unwrap_or("bhyve");
 
-        if args.dry_run {
+        if args.debug {
+            println!("{:#?}", vmrun);
+        }
+
+        if args.dry_run || args.debug {
             print!("{} ", hyve);
             for arg in bootargs {
                 print!("{} ", arg);
             }
             println!();
         
-        let cfs = vmrun.bhyve_conf_opts().map_err(|e| VmRunError::VmErr(e))?;
-        for cf in cfs.iter() {
-            println!("-o {}", cf);
-        }
-            return Ok(());
+            let cfs = vmrun.bhyve_conf_opts().map_err(|e| VmRunError::VmErr(e))?;
+            for cf in cfs.iter() {
+                println!("-o {}", cf);
+            }
+
+            return Ok(exit_code);
         }
 
         let mut process = std::process::Command::new(hyve).args(&bootargs).spawn().ok().unwrap();
@@ -138,7 +149,7 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
         }
     }
 
-        let exit_code = exit_status.code().unwrap();
+        exit_code = exit_status.code().unwrap();
 
         /* if exit code is 0, it means the guest wanna reboot */
         if reboot_count < args.reboot_count.unwrap_or(usize::MAX)
@@ -151,15 +162,27 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<(), VmRunError>
         }
     };
     
-    Ok(())
+    Ok(exit_code)
 }
 
 fn main() {
     let args = Arguments::parse();
-    let content = std::fs::read_to_string(args.config.to_string()).expect("fail to read configuration file");
+    let mut content: String = String::new();
+
+    content = 
+        if args.config.as_str() == "-" {
+            let mut stdin = std::io::stdin();
+            stdin.read_to_string(&mut content).expect("Error reading stdin");
+            content
+        } else {
+            std::fs::read_to_string(args.config.to_string())
+               .expect("fail to read configuration file")
+        };
+
+//    let content = std::fs::read_to_string(args.config.to_string()).expect("fail to read configuration file");
     let vm: spec::VmSpec = serde_json::from_str(&content).expect("malformed config");
     match vm_main(&args, &vm) {
         Err(error) => println!("vmrun exited with error: {}", error),
-        Ok(_) => ()
+        Ok(exit_code) => std::process::exit(exit_code)
     }
 }

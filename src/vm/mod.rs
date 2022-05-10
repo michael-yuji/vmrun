@@ -19,6 +19,7 @@ pub enum VmError {
     IOError(std::io::Error)
 }
 
+#[derive(Debug)]
 pub struct VmRun {
     pub cpu: CpuSpec,
 
@@ -163,6 +164,7 @@ impl VmRun {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub enum LpcDevice {
     Com(u8, String),
     Bootrom(String, Option<String>),
