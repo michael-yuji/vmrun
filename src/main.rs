@@ -39,7 +39,8 @@ struct Arguments {
     #[clap(short, long)]
     target: Option<String>,
 
-    /// The JSON file with the configuration
+    /// The location of the Json configuration file. If `config` is `-`, the
+    /// configuratino will read from the stdin stream instead.
     #[clap(short, long, value_name = "FILE")]
     config:  String,
 
@@ -179,7 +180,6 @@ fn main() {
                .expect("fail to read configuration file")
         };
 
-//    let content = std::fs::read_to_string(args.config.to_string()).expect("fail to read configuration file");
     let vm: spec::VmSpec = serde_json::from_str(&content).expect("malformed config");
     match vm_main(&args, &vm) {
         Err(error) => println!("vmrun exited with error: {}", error),
