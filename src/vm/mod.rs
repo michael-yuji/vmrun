@@ -201,10 +201,15 @@ impl LpcDevice
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBackend {
+    Tap, Netgraph, Netmap
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resource {
-    Iface(String),
+    Iface(NetBackend, String),
     FsItem(String),
     Node(String)
 }
@@ -212,11 +217,31 @@ pub enum Resource {
 impl Resource {
     #[allow(unused_doc_comments)]
     pub fn exists(&self) -> bool {
+
+        /* 
+         * If backend is tap, we run ifconfig to check if the interface exists,
+         * technically we can link agaist lib(private)ifconfig... but that will
+         * involve bindgen and break building on non-freebsd systems.
+         */
+        fn check_iface(backend: &NetBackend, name: &String) -> Option<bool> {
+            match backend {
+                NetBackend::Tap => {
+                    let mut process = std::process::Command::
+                        new("ifconfig".to_string()).arg(name).spawn().ok()?;
+                    process.wait().ok()
+                        .and_then(|e| e.code())
+                        .map(|e| e == 0)
+                },
+                _ => None
+            }
+        }
+
         match self {
             Resource::FsItem(path) => std::path::Path::new(path.as_str()).exists(),
             Resource::Node(node) => std::path::Path::new(node.as_str()).exists(),
             /// TODO: Handle network interface existence logic
-            Resource::Iface(_)     => true
+            Resource::Iface(backend_type, iface) => 
+                check_iface(backend_type, iface).unwrap_or(false)
         }
     }
 
@@ -234,7 +259,7 @@ impl Resource {
 impl std::string::ToString for Resource {
     fn to_string(&self) -> String {
         match self {
-            Resource::Iface(iface) => format!("network interface: ({})",iface),
+            Resource::Iface(_, iface) => format!("network interface: ({})",iface),
             Resource::FsItem(path) => format!("file: ({})", path),
             Resource::Node(node)   => format!("node: ({})", node)
         }

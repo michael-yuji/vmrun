@@ -1,15 +1,9 @@
 use crate::vm::{ EmulatedPci, RawEmulatedPci, EmulationOption, Resource
-               , Requirement};
+               , Requirement, NetBackend };
 
-#[derive(Debug, Clone, Copy)]
-pub enum VirtioNetBackend {
-    Tap,
-    Netgraph,
-    Netmap
-}
 #[derive(Debug, Clone)]
 pub struct VirtioNet {
-    pub tpe:  VirtioNetBackend,
+    pub tpe:  NetBackend,//VirtioNetBackend,
     pub name: String,
     pub mtu:  Option<u32>,
     pub mac:  Option<String>
@@ -17,6 +11,14 @@ pub struct VirtioNet {
 
 impl EmulatedPci for VirtioNet
 {
+    fn preconditions(&self) -> Vec<Requirement> {
+        vec![
+            Requirement::Exists(
+                Resource::Iface(self.tpe, self.name.to_string())
+            )
+        ]
+    }
+
     fn as_raw(&self) -> RawEmulatedPci {
 
         let mut options = vec![];
@@ -32,9 +34,9 @@ impl EmulatedPci for VirtioNet
         }
 
         let tpe = match self.tpe {
-            VirtioNetBackend::Tap => "tap",
-            VirtioNetBackend::Netgraph => "netgraph",
-            VirtioNetBackend::Netmap => "netmap"
+            NetBackend::Tap => "tap",
+            NetBackend::Netgraph => "netgraph",
+            NetBackend::Netmap => "netmap"
         };
 
         options.push(
@@ -233,6 +235,4 @@ impl EmulatedPci for Xhci {
         }
     }
 }
-
-
 

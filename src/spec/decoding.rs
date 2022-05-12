@@ -4,9 +4,8 @@ use std::str::FromStr;
 use crate::spec::FormatError;
 use paste::paste;
 
-use crate::vm::{RawEmulatedPci, EmulatedPci, PciSlot};
+use crate::vm::{RawEmulatedPci, EmulatedPci, PciSlot, NetBackend};
 use crate::vm::emulation::{
-    VirtioNetBackend,
     VirtioNet,
     VirtioBlk, 
     VirtioConsole, 
@@ -24,20 +23,20 @@ fn hmap_to_virtio_net<'de, D>(hmap: std::collections::HashMap<String, String>)
     let tpe = match hmap.get(&"type".to_string()) {
         None =>
             if backend.starts_with("tap") {
-                Ok(VirtioNetBackend::Tap)
+                Ok(NetBackend::Tap)
             } else if backend.starts_with("netgraph") {
-                Ok(VirtioNetBackend::Netgraph)
+                Ok(NetBackend::Netgraph)
             } else if backend.starts_with("netmap") {
-                Ok(VirtioNetBackend::Netmap)
+                Ok(NetBackend::Netmap)
             } else {
                 Err(serde::de::Error::unknown_variant(
                         backend, &["tap*", "netgraph*", "netmap*"]))
             },
         Some(tpe) =>
             match tpe.as_str() {
-                "tap"      => Ok(VirtioNetBackend::Tap),
-                "netgraph" => Ok(VirtioNetBackend::Netgraph),
-                "netmap"   => Ok(VirtioNetBackend::Netmap),
+                "tap"      => Ok(NetBackend::Tap),
+                "netgraph" => Ok(NetBackend::Netgraph),
+                "netmap"   => Ok(NetBackend::Netmap),
                 _          => 
                     Err(serde::de::Error::unknown_variant(tpe.as_str(), &["tap", "netgraph", "netmap"]))
             }
