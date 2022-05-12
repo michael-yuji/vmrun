@@ -179,7 +179,7 @@ impl VmSpec
         clone
     }
 
-    pub fn build(&self) -> Result<VmRun, FormatError>
+    pub fn build(&self, extra_opts: &Vec<String>) -> Result<VmRun, FormatError>
     {
         let mut argv: Vec<String> = Vec::new();
 
@@ -209,7 +209,7 @@ impl VmSpec
                 lpcs.push(LpcDevice::Bootrom(bootrom.to_string(), varfile.clone()))
         };
 
-        let extra_options = 
+        let mut extra_options = 
             if let Some(opts) = &self.extra_options {
                 opts.split(' ')
                    .filter_map(|s|{ 
@@ -217,6 +217,7 @@ impl VmSpec
                }).collect()
         } else { vec![] };
 
+        extra_options.extend(extra_opts.clone());
 
         emus.push(EmulatedPciDevice { 
             slot: hostbdg_slot, 

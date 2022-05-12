@@ -45,7 +45,7 @@ struct Arguments {
     config:  String,
 
     /// Do not follow reboots initiated by the guest
-    #[clap(short, long)]
+    #[clap(long)]
     no_reboot: bool,
 
     /// Print the bhyve command to stdout and exit
@@ -64,9 +64,17 @@ struct Arguments {
     #[clap(long)]
     panic_on_failed_cleaup: bool,
 
+    /// Do not check resources requirement prior to launch bhyve
+    #[clap(long)]
+    no_requirement_check: bool,
+
     /// Dump the resultant configuration and exit
     #[clap(long)]
-    debug: bool
+    debug: bool,
+
+    /// arguments that get passed directly to bhyve
+    #[clap(raw = true, value_name = "BHYVE_ARGS")]
+    extra_bhyve_args: Vec<String>
 }
 
 fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
@@ -104,11 +112,15 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 
         next_target = spec.next_target.clone();
 
-        let vmrun = spec.build().map_err(|e| VmRunError::SpecErr(e))?;
+        let vmrun = spec.build(&args.extra_bhyve_args)
+            .map_err(|e| VmRunError::SpecErr(e))?;
 
-        for requirement in vmrun.preconditions() {
-            if !requirement.is_satisfied() {
-                return Err(VmRunError::PreconditionFailure(requirement.warning()));
+        if !args.no_requirement_check {
+            for requirement in vmrun.preconditions() {
+                if !requirement.is_satisfied() {
+                    return Err(VmRunError::PreconditionFailure(
+                            requirement.warning()));
+                }
             }
         }
 
@@ -125,7 +137,7 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
                 print!("{} ", arg);
             }
             println!();
-        
+
             let cfs = vmrun.bhyve_conf_opts().map_err(|e| VmRunError::VmErr(e))?;
             for cf in cfs.iter() {
                 println!("-o {}", cf);
@@ -140,15 +152,15 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
         for object in vmrun.ephemeral_objects() {
             match object.release() {
                 Err(error) => {
-            if args.panic_on_failed_cleaup {
-                panic!("Error occured when cleaning up: {}", error);
-            } else {
-                println!("warn: Error occured when cleaning up: {}", error);
+                    if args.panic_on_failed_cleaup {
+                        panic!("Error occured when cleaning up: {}", error);
+                    } else {
+                        println!("warn: Error occured when cleaning up: {}", error);
+                    }
+                },
+                Ok(_) => continue
             }
-        },
-        Ok(_) => continue
         }
-    }
 
         exit_code = exit_status.code().unwrap();
 
@@ -169,7 +181,7 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 fn main() {
     let args = Arguments::parse();
     let mut content: String = String::new();
-
+println!("args: {:?}", args);
     content = 
         if args.config.as_str() == "-" {
             let mut stdin = std::io::stdin();
