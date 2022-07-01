@@ -4,10 +4,11 @@ mod spec;
 mod util;
 
 use clap::Parser;
-use vm::{VmError};
+use vm::VmError;
 use spec::FormatError;
 use std::io::{Read, Write};
 use std::process;
+use std::os::raw::c_int;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -51,6 +52,10 @@ struct Arguments {
     #[clap(long)]
     no_reboot: bool,
 
+    /// Become daemon
+    #[clap(long)]
+    daemon: bool,
+
     /// Print the bhyve command to stdout and exit
     #[clap(short = 'D', long)]
     dry_run: bool,
@@ -89,15 +94,16 @@ struct Arguments {
 }
 
 fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
-    let mut parts = s.split(",");
+    let parts = s.split(',');
     let mut vec = Vec::<i32>::new();
-    while let Some(part) = parts.next() {
+    for part in parts {
         let int = part.parse::<i32>()
             .map_err(|_e| "invalid value encountered while parsing i32 list")?;
         vec.push(int);
     }
     Ok(ArgVec { vec })
 }
+
 fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 {
     let mut spec = vm.clone();
@@ -107,12 +113,12 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 
     fn vm_run_session(args: &Arguments, vmrun: &vm::VmRun) -> Result<i32, VmRunError>
     {
-       let bootargs = vmrun.bhyve_args().map_err(|e| VmRunError::VmErr(e))?;
-       let hyve = std::option_env!("BHYVE_EXEC").unwrap_or("bhyve");
+        let bootargs = vmrun.bhyve_args().map_err(VmRunError::VmErr)?;
+        let hyve = std::option_env!("BHYVE_EXEC").unwrap_or("bhyve");
 
-       if args.debug {
-           println!("{:#?}", vmrun);
-       }
+        if args.debug {
+            println!("{:#?}", vmrun);
+        }
 
         if args.dry_run || args.debug {
             print!("{} ", hyve);
@@ -122,10 +128,13 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
             println!();
 
             let cfs = vmrun.bhyve_conf_opts()
-                .map_err(|e| VmRunError::VmErr(e))?;
+                .map_err(VmRunError::VmErr)?;
             for cf in cfs.iter() {
                 println!("-o {}", cf);
             }
+
+            let requirements = vmrun.preconditions();
+            println!("requirements: {requirements:?}");
 
             return Ok(0);
         }
@@ -140,7 +149,7 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 
         if let Some(mut pid_file) = pid_file {
             pid_file.write(process.id().to_string().as_bytes())
-                .map_err(|e| VmRunError::IoError(e))?;
+                .map_err(VmRunError::IoError)?;
         }
 
         let exit_status = process.wait().ok().unwrap();
@@ -158,26 +167,28 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
             if target == "default" && !spec.has_target(target) {
                 spec = vm.clone();
             } else {
-                spec.consume_target(target).map_err(|e| VmRunError::SpecErr(e))?;
+                spec.consume_target(target).map_err(VmRunError::SpecErr)?;
             }
         }
 
         next_target = spec.next_target.clone();
 
         let vmrun = spec.build(&args.extra_bhyve_args)
-            .map_err(|e| VmRunError::SpecErr(e))?;
+            .map_err(VmRunError::SpecErr)?;
 
         if !args.no_requirement_check {
             for requirement in vmrun.preconditions() {
+                println!("requirement: {requirement:?}");
                 if !requirement.is_satisfied() {
+                    println!("not satisfied");
                     return Err(VmRunError::PreconditionFailure(
                             requirement.warning()));
                 }
             }
         }
 
-        let run_result = vm_run_session(&args, &vmrun);
-        
+        let run_result = vm_run_session(args, &vmrun);
+
         for object in vmrun.ephemeral_objects() {
             match object.release() {
                 Err(error) => {
@@ -221,15 +232,13 @@ fn open_pid_file<P: AsRef<std::path::Path>>(path: P)
                 format!("{:?} is not writable", path.as_ref())))
         } else {
             std::fs::File::options().write(true).open(path)
-                .map_err(|e| VmRunError::IoError(e))
+                .map_err(VmRunError::IoError)
         }
+    } else if let Some(_parent) = path.as_ref().parent() {
+        std::fs::File::create(path).map_err(VmRunError::IoError)
     } else {
-        if let Some(_parent) = path.as_ref().parent() {
-            std::fs::File::create(path).map_err(|e| VmRunError::IoError(e))
-        } else {
-            Err(VmRunError::PreconditionFailure(
-                format!("Parent to {:?} is not available", path.as_ref())))
-        }
+        Err(VmRunError::PreconditionFailure(
+           format!("Parent to {:?} is not available", path.as_ref())))
     }
 }
 
@@ -237,8 +246,12 @@ fn write_pid_file<P: AsRef<std::path::Path>>(path: P, pid: u32)
     -> Result<(), VmRunError> 
 {
     let mut file = open_pid_file(path)?;
-    file.write(pid.to_string().as_bytes()).map_err(|e| VmRunError::IoError(e))?;
+    file.write(pid.to_string().as_bytes()).map_err(VmRunError::IoError)?;
     Ok(())
+}
+
+extern "C" {
+    pub fn daemon(_: c_int, _: c_int) -> c_int;
 }
 
 fn main() {
@@ -251,7 +264,7 @@ fn main() {
             stdin.read_to_string(&mut content).expect("Error reading stdin");
             content
         } else {
-            std::fs::read_to_string(args.config.to_string())
+            std::fs::read_to_string(&args.config)
                .expect("fail to read configuration file")
         };
 
@@ -263,6 +276,17 @@ fn main() {
     }
 
     let vm: spec::VmSpec = serde_json::from_str(&content).expect("malformed config");
+
+    if args.daemon {
+        if args.vm_pid_file.is_none() || args.supervisor_pid_file.is_none() {
+            return;
+        } else {
+            unsafe {
+                daemon(0, 0);
+            }
+        }
+    }
+
     match vm_main(&args, &vm) {
         Err(error) => println!("vmrun exited with error: {}", error),
         Ok(exit_code) => std::process::exit(exit_code)

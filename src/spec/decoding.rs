@@ -10,7 +10,8 @@ use crate::vm::emulation::{
     VirtioBlk, 
     VirtioConsole, 
     AhciHd, 
-    AhciCd
+    AhciCd,
+    PciPassthru
 };
 
 fn hmap_to_virtio_net<'de, D>(hmap: std::collections::HashMap<String, String>) 
@@ -106,6 +107,13 @@ pub struct VirtioConsoleDef {
     ports: Vec<String>
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(remote = "crate::vm::emulation::PciPassthru")]
+pub struct PciPassthruDef {
+    src: PciSlot,
+    rom: Option<String>
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "device")]
 pub enum Emulations {
@@ -128,6 +136,10 @@ pub enum Emulations {
     #[serde(rename = "ahci-cd")]
     AhciCd(AhciCd),
 
+    #[serde(with = "PciPassthruDef")]
+    #[serde(rename = "passthru")]
+    Passthru(PciPassthru),
+
     #[serde(rename = "raw")]
     Raw { value: String }
 }
@@ -147,6 +159,7 @@ impl Emulation {
             Emulations::AhciCd(x) => Ok(x.as_raw()),
             Emulations::AhciHd(x) => Ok(x.as_raw()),
             Emulations::VirtioConsole(x) => Ok(x.as_raw()),
+            Emulations::Passthru(x) => Ok(x.as_raw()),
             Emulations::Raw { value } =>
                 RawEmulatedPci::from_str(&value)
                 .map_err(|_e| FormatError::IncorrectEmulation)

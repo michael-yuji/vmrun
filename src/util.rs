@@ -2,10 +2,10 @@
 use num_traits::Num;
 use crate::spec::FormatError;
 
-pub fn vec_exists<T, F>(vec: &Vec<T>, cond: F) -> bool 
+pub fn vec_exists<T, F>(vec: &[T], cond: F) -> bool 
   where F: Fn(&T) -> bool
 {
-    for i in vec.into_iter() {
+    for i in vec.iter() {
         if cond(i) {
             return true;
         }
@@ -14,12 +14,12 @@ pub fn vec_exists<T, F>(vec: &Vec<T>, cond: F) -> bool
     false
 }
 
-pub fn vec_sequence_map<E, A, B, F>(vec: &Vec<A>, map: F) -> Result<Vec<B>, E>
+pub fn vec_sequence_map<E, A, B, F>(vec: &[A], map: F) -> Result<Vec<B>, E>
   where F: Fn(&A) -> Result<B, E>
 {
     let mut v = Vec::new();
 
-    for ins in vec.into_iter() {
+    for ins in vec.iter() {
         let b = map(ins)?;
         v.push(b);
     }
@@ -75,7 +75,7 @@ pub fn take_numeric<N: Num<FromStrRadixErr = std::num::ParseIntError>>(
                 }
 
                 if value.is_digit(radix) { 
-                    index = index + 1;
+                    index += 1;
                 } else {
                     break
                 }
@@ -87,14 +87,14 @@ pub fn take_numeric<N: Num<FromStrRadixErr = std::num::ParseIntError>>(
         if radix == 16 || radix == 2 { 2 } else if radix == 8 { 1 } else { 0 };
 
     let value = N::from_str_radix(&input[start..index], radix)
-        .map_err(|e| FormatError::InvalidValue(e))?;
+        .map_err(FormatError::InvalidValue)?;
 
     Ok((value, &input[index..]))
 }
 
 pub fn parse_mem_in_kb(input: &String) -> Result<usize, FormatError>
 {
-    let (value, rest) = take_numeric::<usize>(true, &input)?;
+    let (value, rest) = take_numeric::<usize>(true, input)?;
     let multipier: usize = (match rest {
         "K"|"KB"|"kb"|"Kb" => Ok(1),
         "M"|"MB"|"mb"|"Mb" => Ok(1024),

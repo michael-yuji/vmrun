@@ -20,7 +20,8 @@ pub enum VmError {
 }
 
 #[derive(Debug)]
-pub struct VmRun {
+pub struct VmRun
+{
     pub cpu: CpuSpec,
 
     pub mem_kb: usize,
@@ -53,17 +54,22 @@ pub struct VmRun {
     pub extra_options: Vec<String>
 }
 
-impl VmRun {
-
+impl VmRun
+{
     pub fn preconditions(&self) -> Vec<Requirement> {
-        self.emulations.clone().into_iter()
-            .map(|e| e.emulation.preconditions().into_iter()).flatten().collect()
+        let mut pci_cond: Vec<_> = self.emulations.clone().into_iter()
+            .flat_map(|e| e.emulation.preconditions().into_iter()).collect();
+
+        let lpc_cond: Vec<_> = self.lpc_devices.clone().into_iter()
+            .flat_map(|d| d.preconditions().into_iter()).collect();
+
+        pci_cond.extend(lpc_cond);
+        pci_cond
     }
 
     pub fn ephemeral_objects(&self) -> Vec<Resource> {
         self.emulations.clone().into_iter()
-            .map(|e| e.emulation.ephemeral_objects().into_iter()).flatten()
-            .collect()
+            .flat_map(|e| e.emulation.ephemeral_objects().into_iter()).collect()
     }
 
     pub fn bhyve_conf_opts(&self) -> Result<Vec<String>> {
@@ -84,7 +90,7 @@ impl VmRun {
         push_yesno(self.power_off_destroy_vm, "destroy_on_poweroff", true);
 
         opts.push(format!("memory.size={}K", self.mem_kb));
-        opts.extend(self.cpu.to_bhyve_conf());
+        opts.extend(self.cpu.as_bhyve_conf());
 
         for emulation in self.emulations.iter() {
             if emulation.is_lpc() {
@@ -128,7 +134,7 @@ impl VmRun {
             argv.push(value);
         };
 
-        push_arg_pair("-c", self.cpu.to_bhyve_arg());
+        push_arg_pair("-c", self.cpu.as_bhyve_arg());
         push_arg_pair("-m", format!("{}K", self.mem_kb));
 
         if let Some(gdb) = &self.gdb {
@@ -164,7 +170,7 @@ impl VmRun {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LpcDevice {
     Com(u8, String),
     Bootrom(String, Option<String>),
@@ -173,6 +179,32 @@ pub enum LpcDevice {
 
 impl LpcDevice
 {
+    fn preconditions(&self) -> Vec<Requirement> {
+        match self {
+            LpcDevice::Com(_i, _node) => {
+                /*
+                if node.as_str() == "stdio" {
+                } else if node.starts_with("nmdm") {
+                    // check if the nmdm kmod is loaded
+                }
+                */
+                vec![]
+            },
+            LpcDevice::Bootrom(bootrom, bootvars) => {
+                match bootvars {
+                    None => vec![
+                        Requirement::Exists(Resource::FsItem(bootrom.to_string()))
+                    ],
+                    Some(bv) => vec![
+                        Requirement::Exists(Resource::FsItem(bootrom.to_string())),
+                        Requirement::Exists(Resource::FsItem(bv.to_string()))
+                    ]
+                }
+            },
+            _ => vec![]
+        }
+    }
+
     fn to_bhyve_conf(&self) -> Vec<String> {
         match self {
             LpcDevice::TestDev => vec!["lpc.pc-testdev=true".to_string()],
@@ -190,7 +222,7 @@ impl LpcDevice
     fn to_bhyve_arg(&self) -> String {
         match self {
             LpcDevice::Com(i, val) => format!("com{},{}", i, val),
-            LpcDevice::TestDev     => format!("pc-testdev"),
+            LpcDevice::TestDev     => "pc-testdev".to_string(),
             LpcDevice::Bootrom(firmware, varfile) => {
                 match varfile {
                     Some(var) => format!("bootrom,{},{}", firmware, var),
@@ -227,7 +259,7 @@ impl Resource {
             match backend {
                 NetBackend::Tap => {
                     let mut process = std::process::Command::
-                        new("ifconfig".to_string()).arg(name).spawn().ok()?;
+                        new("ifconfig").arg(name).spawn().ok()?;
                     process.wait().ok()
                         .and_then(|e| e.code())
                         .map(|e| e == 0)
@@ -248,9 +280,9 @@ impl Resource {
     pub fn release(&self) -> Result<()> {
         match self {
             Resource::FsItem(path) => 
-                std::fs::remove_file(path).map_err(|e| VmError::IOError(e)),
+                std::fs::remove_file(path).map_err(VmError::IOError),
             Resource::Node(node) =>
-                std::fs::remove_file(node).map_err(|e| VmError::IOError(e)),
+                std::fs::remove_file(node).map_err(VmError::IOError),
             _ => Ok(())
         }
     }
@@ -349,7 +381,7 @@ impl EmulatedPciDevice {
 
     fn to_bhyve_arg(&self) -> String {
         let mut ret = 
-            format!("{},{}", self.slot.to_bhyve_arg(), self.emulation.frontend);
+            format!("{},{}", self.slot.as_bhyve_arg(), self.emulation.frontend);
 
         if let Some((_, backend)) = &self.emulation.backend {
             ret.extend(format!(",{}", backend).chars());
@@ -360,7 +392,7 @@ impl EmulatedPciDevice {
                 EmulationOption::On(flag) => format!(",{}", flag),
                 EmulationOption::KeyValue(key, value) => format!(",{}={}", key, value)
             };
-            ret.extend(value.chars());
+            ret.push_str(&value);
         }
 
         ret
@@ -373,16 +405,16 @@ impl FromStr for RawEmulatedPci {
         let mut components = val.split(',');
         let mut options = Vec::<EmulationOption>::new();
 
-        let frontend = components.next().ok_or(
+        let frontend = components.next().ok_or_else(||
             VmError::MalformedEmulationSyntax(val.to_string())
         )?;
 
-        while let Some(value) = components.next() {
+        for value in components {
             /* try to split the option by =, if the result length is 1, the option
              * is a flag, otherwise, it is a key value
              */
-            let mut lookup = value.splitn(2, "=");
-            let flag_or_key = lookup.next().ok_or(
+            let mut lookup = value.splitn(2, '=');
+            let flag_or_key = lookup.next().ok_or_else(||
                 VmError::MalformedEmulationSyntax(val.to_string())
             )?;
 
@@ -396,7 +428,7 @@ impl FromStr for RawEmulatedPci {
 
         Ok(RawEmulatedPci {
             frontend: frontend.to_string(),
-	    device:   frontend.to_string(),
+            device:   frontend.to_string(),
             backend: None,
             options
         })
@@ -429,7 +461,7 @@ pub struct CpuSpec {
 }
 
 impl CpuSpec {
-    fn to_bhyve_arg(&self) -> String {
+    fn as_bhyve_arg(&self) -> String {
         if self.sockets == 1 && self.cores == 1 {
             self.threads.to_string()
         } else {
@@ -437,7 +469,7 @@ impl CpuSpec {
         }
     }
 
-    fn to_bhyve_conf(&self) -> Vec<String> {
+    fn as_bhyve_conf(&self) -> Vec<String> {
         vec![
             format!("sockets={}", self.sockets),
             format!("cores={}",   self.cores),
@@ -454,8 +486,12 @@ pub struct PciSlot {
 }
 
 impl PciSlot {
-    pub fn to_bhyve_arg(&self) -> String {
+    pub fn as_bhyve_arg(&self) -> String {
         format!("{}:{}:{}", self.bus, self.slot, self.func)
+    }
+
+    pub fn as_passthru_arg(&self) -> String {
+        format!("{}/{}/{}", self.bus, self.slot, self.func)
     }
 }
 
@@ -480,5 +516,4 @@ impl PartialOrd for PciSlot {
         Some(self.cmp(other))
     }
 }
-
 

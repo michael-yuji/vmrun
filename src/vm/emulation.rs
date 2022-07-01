@@ -1,9 +1,9 @@
 use crate::vm::{ EmulatedPci, RawEmulatedPci, EmulationOption, Resource
-               , Requirement, NetBackend };
+               , Requirement, NetBackend, PciSlot };
 
 #[derive(Debug, Clone)]
 pub struct VirtioNet {
-    pub tpe:  NetBackend,//VirtioNetBackend,
+    pub tpe:  NetBackend,
     pub name: String,
     pub mtu:  Option<u32>,
     pub mac:  Option<String>
@@ -12,6 +12,7 @@ pub struct VirtioNet {
 impl EmulatedPci for VirtioNet
 {
     fn preconditions(&self) -> Vec<Requirement> {
+        println!("blah");
         vec![
             Requirement::Exists(
                 Resource::Iface(self.tpe, self.name.to_string())
@@ -93,7 +94,7 @@ impl EmulatedPci for VirtioBlk
 
         if let Some(logical) = self.logical_sector_size {
             let value = match self.physical_sector_size {
-                    Some(physical) => format!("{}/{}",logical,physical),
+                    Some(physical) => format!("{logical}/{physical}"),
                     None => format!("{}", logical)
                 };
             options.push(EmulationOption::KeyValue(
@@ -185,6 +186,25 @@ impl EmulatedPci for VirtioConsole {
 }
 
 #[derive(Debug, Clone)]
+pub struct PciPassthru {
+    pub src: PciSlot,
+    pub rom: Option<String>
+}
+
+impl EmulatedPci for PciPassthru {
+    fn as_raw(&self) -> RawEmulatedPci {
+        let mut options = vec![];
+        options_push_kv!(options, self, rom);
+        RawEmulatedPci {
+            frontend: "passthru".to_string(),
+            device:   "passthru".to_string(),
+            backend: Some(("".to_string(), self.src.as_passthru_arg())),
+            options
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Framebuffer {
     pub host: String,
     pub port: Option<u16>,
@@ -207,7 +227,7 @@ impl EmulatedPci for Framebuffer {
         let rfb = if let Some(port) = &self.port {
             format!("{}:{}", self.host, port)
         } else {
-            format!("{}", self.host)
+            self.host.to_string()
         };
 
         options.push(EmulationOption::KeyValue("rfb".to_string(), rfb));
