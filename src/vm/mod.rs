@@ -83,12 +83,6 @@ impl BhyveDev for VmRun {
             lpc.push(lpc_device.preconditions());
         }
 
-        if !self.lpc_devices.is_empty() {
-            lpc.push(GenericFatalCondition::new_boxed(
-                    "lpc_must_exists",
-                    "lpc device must be included for this vm"))
-        }
-
         let nc = Box::new(NestedConditions { name: "vpci".to_string(), conditions: emuc });
         let lc = Box::new(NestedConditions { name: "lpc".to_string(), conditions: lpc });
 
@@ -202,7 +196,7 @@ impl BhyveDev for LpcDevice {
             LpcDevice::Com(n, device) => {
                 let mut conditions = vec![];
 
-                if let 1u8..=3 = n {
+                if let 1u8..=3 = n {} else {
                     conditions.push(GenericFatalCondition::new_boxed(
                         "invalid-com-number",
                         "only com[1-3] are supported"));
