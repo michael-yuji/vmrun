@@ -1,5 +1,24 @@
-use crate::vm::{ EmulatedPci, RawEmulatedPci, EmulationOption, Resource
-               , Requirement, NetBackend, PciSlot };
+use crate::vm::{ EmulatedPci, Resource, BhyveDev
+               , NetBackend, PciSlot};
+use crate::vm::conditions::{
+    Absence, Condition, Existence, FsEntity, ValidPassthruDevice,
+    NetworkBackendAvailable, NestedConditions, NoCond, ValidResolution};
+
+macro_rules! push_on_options {
+    ($base:expr, $self:expr, $value:ident) => {
+        if $self.$value {
+            $base.push_str(format!(",{}", stringify!($value)).as_str());
+        }
+    }
+}
+
+macro_rules! push_on_kv {
+    ($base:expr, $self:expr, $key:ident) => {
+        if let Some(value) = &$self.$key {
+            $base.push_str(format!(",{}={}", stringify!($key), value).as_str());
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct VirtioNet {
@@ -9,65 +28,24 @@ pub struct VirtioNet {
     pub mac:  Option<String>
 }
 
-impl EmulatedPci for VirtioNet
+impl BhyveDev for VirtioNet 
 {
-    fn preconditions(&self) -> Vec<Requirement> {
-        println!("blah");
-        vec![
-            Requirement::Exists(
-                Resource::Iface(self.tpe, self.name.to_string())
-            )
-        ]
-    }
-
-    fn as_raw(&self) -> RawEmulatedPci {
-
-        let mut options = vec![];
-
-        if let Some(mtu) = self.mtu {
-            options.push(
-                EmulationOption::KeyValue("mtu".to_string(), mtu.to_string()));
-        }
-
-        if let Some(mac) = &self.mac {
-            options.push(
-                EmulationOption::KeyValue("mac".to_string(), mac.to_string()));
-        }
-
-        let tpe = match self.tpe {
-            NetBackend::Tap => "tap",
-            NetBackend::Netgraph => "netgraph",
-            NetBackend::Netmap => "netmap"
-        };
-
-        options.push(
-            EmulationOption::KeyValue("type".to_string(), tpe.to_string()));
-
-        RawEmulatedPci {
-            frontend: "virtio-net".to_string(),
-            device:   "virtio-net".to_string(),
-            backend:  Some(("backend".to_string(), self.name.to_string())),
-            options
-        }
+    fn preconditions(&self) -> Box<dyn Condition> {
+            Box::new(NetworkBackendAvailable { 
+                backend: self.tpe, name: self.name.to_string() })
     }
 }
 
-macro_rules! options_push_on {
-    ($options:expr, $self:expr, $value:ident) => {
-        if $self.$value {
-            $options.push(EmulationOption::On(stringify!($value).to_string()));
-        }
+impl EmulatedPci for VirtioNet {
+    fn as_bhyve_arg(&self) -> String {
+        let mut base = format!("virtio-net,{},type={}", self.name, self.tpe.to_string());
+        push_on_kv!(base, self, mtu);
+        push_on_kv!(base, self, mac);
+        base
     }
 }
 
-macro_rules! options_push_kv {
-    ($options:expr, $self:expr, $key:ident) => {
-        if let Some(value) = &$self.$key {
-            $options.push(EmulationOption::KeyValue(
-                    stringify!($key).to_string(), value.to_string()));
-        }
-    }
-}
+
 #[derive(Debug, Clone)]
 pub struct VirtioBlk {
     pub path: String,
@@ -79,34 +57,32 @@ pub struct VirtioBlk {
     pub nodelete: bool
 }
 
-impl EmulatedPci for VirtioBlk
+impl BhyveDev for VirtioBlk
 {
-    fn preconditions(&self) -> Vec<Requirement> {
-        vec![Requirement::Exists(Resource::FsItem(self.path.to_string()))]
+    fn preconditions(&self) -> Box<dyn Condition> {
+        let path = std::path::PathBuf::from(self.path.to_string());
+        Box::new(Existence { resource: FsEntity::File(path) })
     }
+}
 
-    fn as_raw(&self) -> RawEmulatedPci {
-        let mut options = vec![];
-        options_push_on!(options, self, direct);
-        options_push_on!(options, self, nocache);
-        options_push_on!(options, self, ro);
-        options_push_on!(options, self, nodelete);
+impl EmulatedPci for VirtioBlk {
+    fn as_bhyve_arg(&self) -> String {
+        let mut base = format!("virtio-blk,{}", self.path);
+        push_on_options!(base, self, direct);
+        push_on_options!(base, self, nocache);
+        push_on_options!(base, self, ro);
+        push_on_options!(base, self, nodelete);
 
         if let Some(logical) = self.logical_sector_size {
             let value = match self.physical_sector_size {
-                    Some(physical) => format!("{logical}/{physical}"),
-                    None => format!("{}", logical)
-                };
-            options.push(EmulationOption::KeyValue(
-                    "sectorsize".to_string(), value));
+                Some(physical) => format!("{logical}/{physical}"),
+                None => format!("{logical}")
+            };
+
+            base.push_str(format!("sectorsize={value}").as_str());
         }
 
-        RawEmulatedPci {
-            frontend: "virtio-blk".to_string(),
-            device:   "virtio-blk".to_string(),
-            backend:  Some(("path".to_string(), self.path.to_string())),
-            options
-        }
+        base
     }
 }
 
@@ -123,25 +99,20 @@ macro_rules! mk_ahci_frontend {
 
         impl EmulatedPci for $name {
 
-            fn preconditions(&self) -> Vec<Requirement> {
-                vec![Requirement::Exists(
-                    Resource::FsItem(self.path.to_string()))]
+            fn as_bhyve_arg(&self) -> String {
+                let mut base = format!("{},{}", $value, self.path);
+                push_on_kv!(base, self, nmrr);
+                push_on_kv!(base, self, ser);
+                push_on_kv!(base, self, rev);
+                push_on_kv!(base, self, model);
+                base
             }
+        }
 
-            fn as_raw(&self) -> RawEmulatedPci {
-                let mut options = vec![];
-
-                options_push_kv!(options, self, nmrr);
-                options_push_kv!(options, self, ser);
-                options_push_kv!(options, self, rev);
-                options_push_kv!(options, self, model);
-
-                RawEmulatedPci {
-                    frontend: $value.to_string(),
-                    device:   "ahci".to_string(),
-                    backend:  Some(("path".to_string(), self.path.to_string())),
-                    options
-                }
+        impl BhyveDev for $name {
+            fn preconditions(&self) -> Box<dyn Condition> {
+                let pathbuf = std::path::PathBuf::from(self.path.to_string());
+                    Box::new(Existence { resource: FsEntity::FsItem(pathbuf) })
             }
         }
     }
@@ -154,53 +125,67 @@ pub struct VirtioConsole {
     pub ports: Vec<String>
 }
 
-impl EmulatedPci for VirtioConsole {
+impl BhyveDev for VirtioConsole {
 
-    fn preconditions(&self) -> Vec<Requirement> {
-        self.ports.iter()
-            .map(|port| Requirement::Nonexists(
-                    Resource::FsItem(port.to_string()))
-                )
-            .collect()
+    fn preconditions(&self) -> Box<dyn Condition> {
+
+        let mut cond: Vec<Box<dyn Condition>> = vec![];
+
+        for port in self.ports.iter() {
+            let port = std::path::PathBuf::from(port);
+            cond.push(Box::new(Absence { resource: FsEntity::FsItem(port) }))
+        }
+
+        Box::new(NestedConditions { name: "virtio-console".to_string()
+                               , conditions: cond 
+                               })
     }
+}
 
+impl EmulatedPci for VirtioConsole {
     fn ephemeral_objects(&self) -> Vec<Resource> {
         self.ports.iter().map(|port| Resource::Node(port.to_string())).collect()
     }
 
-    fn as_raw(&self) -> RawEmulatedPci {
-        let mut options = vec![];
+    fn as_bhyve_arg(&self) -> String {
+        let mut base = "virtio-console".to_string();
         for index in 0..self.ports.len() {
-            let opt = EmulationOption
-                ::KeyValue(format!("port{}", index + 1), self.ports[index].to_string());
-            options.push(opt);
+            base.push_str(format!(",port{}={}", index + 1, self.ports[index]).as_str());
         }
-
-        RawEmulatedPci {
-            frontend: "virtio-console".to_string(),
-            device:   "virtio-console".to_string(),
-            backend:  None,
-            options
-        }
+        base
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct PciPassthru {
     pub src: PciSlot,
-    pub rom: Option<String>
+    pub rom: Option<String>,
 }
 
 impl EmulatedPci for PciPassthru {
-    fn as_raw(&self) -> RawEmulatedPci {
-        let mut options = vec![];
-        options_push_kv!(options, self, rom);
-        RawEmulatedPci {
-            frontend: "passthru".to_string(),
-            device:   "passthru".to_string(),
-            backend: Some(("".to_string(), self.src.as_passthru_arg())),
-            options
-        }
+    fn as_bhyve_arg(&self) -> String {
+        let mut base = format!("passthru,{}", self.src.as_passthru_arg());
+        push_on_kv!(base, self, rom);
+        base
+    }
+}
+
+impl BhyveDev for PciPassthru {
+    fn preconditions(&self) -> Box<dyn Condition>
+    {
+        println!("pci passthru preconditions");
+        let mut base: Vec<Box<dyn Condition>> = 
+            vec![Box::new(ValidPassthruDevice { slot: self.src })];
+
+        match &self.rom {
+            None => (),
+            Some(rom) => { 
+                let rom = std::path::PathBuf::from(rom);
+                base.push(Box::new(Existence { resource: FsEntity::File(rom) }))
+            }
+        };
+
+        Box::new(NestedConditions { name: "passthru".to_string(), conditions: base })
     }
 }
 
@@ -215,29 +200,22 @@ pub struct Framebuffer {
     pub password: Option<String>
 }
 
+impl BhyveDev for Framebuffer {
+    fn preconditions(&self) -> Box<dyn Condition> {
+        Box::new(ValidResolution { w: self.w, h: self.h })
+    }
+}
+
 impl EmulatedPci for Framebuffer {
-    fn as_raw(&self) -> RawEmulatedPci {
-        let mut options = vec![];
-        options_push_on!(options, self, wait);
-        options_push_kv!(options, self, h);
-        options_push_kv!(options, self, w);
-        options_push_kv!(options, self, password);
-        options_push_kv!(options, self, vga);
-
-        let rfb = if let Some(port) = &self.port {
-            format!("{}:{}", self.host, port)
-        } else {
-            self.host.to_string()
-        };
-
-        options.push(EmulationOption::KeyValue("rfb".to_string(), rfb));
-
-        RawEmulatedPci {
-            frontend: "fbuf".to_string(),
-            device:   "fbuf".to_string(),
-            backend: None,
-            options
-        }
+    fn as_bhyve_arg(&self) -> String {
+        let mut base = format!("fbuf,host={}", self.host);
+        push_on_kv!(base, self, port);
+        push_on_kv!(base, self, w);
+        push_on_kv!(base, self, h);
+        push_on_kv!(base, self, vga);
+        push_on_kv!(base, self, password);
+        push_on_options!(base, self, wait);
+        base
     }
 }
 
@@ -245,14 +223,50 @@ impl EmulatedPci for Framebuffer {
 pub struct Xhci {
 }
 
-impl EmulatedPci for Xhci {
-    fn as_raw(&self) -> RawEmulatedPci {
-        RawEmulatedPci {
-            frontend: "xhci".to_string(),
-            device:   "xhci".to_string(),
-            backend:  Some(("slot.1.device".to_string(), "tablet".to_string())),
-            options:  vec![]
-        }
+impl BhyveDev for Xhci {
+    fn preconditions(&self) -> Box<dyn Condition> {
+        Box::new(NoCond {})
     }
 }
 
+
+impl EmulatedPci for Xhci {
+    fn as_bhyve_arg(&self) -> String {
+        "xhci,tablet".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pci_passthru_format() {
+        let slot = PciSlot { bus: 1, slot: 1, func: 1 };
+        let device = PciPassthru { src: slot, rom: None };
+        let device2 = PciPassthru { rom: Some("1.fd".to_string()), ..device };
+        assert_eq!(device.as_bhyve_arg(), "passthru,1/1/1");
+        assert_eq!(device2.as_bhyve_arg(), "passthru,1/1/1,rom=1.fd");
+    }
+
+    #[test]
+    fn xhci_format() {
+        let device = Xhci {};
+        assert_eq!(device.as_bhyve_arg(), "xhci,tablet");
+    }
+
+    #[test]
+    fn framebuffer_format() {
+        let fb = Framebuffer {
+            host: "0.0.0.0".to_string(),
+            port: None,
+            w: Some(1280),
+            h: Some(920),
+            vga: None,
+            wait: true,
+            password: None
+        };
+
+        assert_eq!(fb.as_bhyve_arg(), "fbuf,host=0.0.0.0,w=1280,h=920,wait");
+    }
+}

@@ -40,6 +40,7 @@ impl PciSlotGenerator
         }
     }
 
+    #[allow(dead_code)]
     pub fn try_take_specific_bus_slot(&mut self, bus: u8, slot: u8)
         -> Option<PciSlot>
     {

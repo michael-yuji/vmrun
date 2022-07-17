@@ -4,17 +4,17 @@ mod spec;
 mod util;
 
 use clap::Parser;
-use vm::VmError;
 use spec::FormatError;
 use std::io::{Read, Write};
 use std::process;
-use std::os::raw::c_int;
 use thiserror::Error;
+use util::assertion::Assertion;
+use vm::BhyveDev;
 
 #[derive(Error, Debug)]
 enum VmRunError {
     #[error("vmerror::{0}")]
-    VmErr(VmError),
+    VmErr(Assertion),
     #[error("format_error::{0}")]
     SpecErr(FormatError),
     #[error("One of more precondition failed: {0}")]
@@ -52,9 +52,11 @@ struct Arguments {
     #[clap(long)]
     no_reboot: bool,
 
-    /// Become daemon
+    #[clap(long, short)]
+    force: bool,
+
     #[clap(long)]
-    daemon: bool,
+    recover: bool,
 
     /// Print the bhyve command to stdout and exit
     #[clap(short = 'D', long)]
@@ -78,7 +80,7 @@ struct Arguments {
 
     /// Do not proceed if any cleaup failed
     #[clap(long)]
-    panic_on_failed_cleaup: bool,
+    panic_on_failed_cleanup: bool,
 
     /// Do not check resources requirement prior to launch bhyve
     #[clap(long)]
@@ -104,6 +106,14 @@ fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
     Ok(ArgVec { vec })
 }
 
+fn ask_yesno(question: String) -> bool {
+    println!("{question}? [y/N] (default: No)");
+    let mut buffer = String::new();
+    let stdin = std::io::stdin();
+    stdin.read_line(&mut buffer).unwrap();
+    buffer.starts_with('Y') || buffer.starts_with('y')
+}
+
 fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 {
     let mut spec = vm.clone();
@@ -111,7 +121,7 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
     let mut next_target = args.target.clone();
     let mut exit_code: i32;
 
-    fn vm_run_session(args: &Arguments, vmrun: &vm::VmRun) -> Result<i32, VmRunError>
+    fn vm_run_session(args: &Arguments, spec: &spec::VmSpec, vmrun: &vm::VmRun) -> Result<i32, VmRunError>
     {
         let bootargs = vmrun.bhyve_args().map_err(VmRunError::VmErr)?;
         let hyve = std::option_env!("BHYVE_EXEC").unwrap_or("bhyve");
@@ -126,16 +136,6 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
                 print!("{} ", arg);
             }
             println!();
-
-            let cfs = vmrun.bhyve_conf_opts()
-                .map_err(VmRunError::VmErr)?;
-            for cf in cfs.iter() {
-                println!("-o {}", cf);
-            }
-
-            let requirements = vmrun.preconditions();
-            println!("requirements: {requirements:?}");
-
             return Ok(0);
         }
 
@@ -144,12 +144,26 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
             None => None
         };
 
-        let mut process = std::process::Command::new(hyve)
-            .args(&bootargs).spawn().ok().unwrap();
+        let dev = std::path::PathBuf::from(format!("/dev/vmm/{}", vmrun.name));
+        if dev.exists() && args.force {
+            std::process::Command::new("bhyvectl")
+                .arg("--destroy").arg(format!("--vm={}", vmrun.name))
+                .spawn().ok().unwrap();
+        }
+
+        let mut process = std::process::Command::new(hyve).args(&bootargs).spawn().ok().unwrap();
 
         if let Some(mut pid_file) = pid_file {
             pid_file.write(process.id().to_string().as_bytes())
                 .map_err(VmRunError::IoError)?;
+        }
+
+        if let Some(action) = &spec.post_start_script {
+            let args: Vec<&str> = action.split(' ').collect();
+            println!("args: {args:?}");
+            let mut p = std::process::Command::new(args[0]).args(&args[1..]).spawn().ok().unwrap();
+            p.wait().ok().unwrap();
+
         }
 
         let exit_status = process.wait().ok().unwrap();
@@ -157,7 +171,6 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
     }
 
     loop {
-
         /* if the current target specified next target to run */
         if let Some(target) = &next_target {
             /*
@@ -176,23 +189,40 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
         let vmrun = spec.build(&args.extra_bhyve_args)
             .map_err(VmRunError::SpecErr)?;
 
+        // Check if every requirements are archieved before handing to bhyve
         if !args.no_requirement_check {
-            for requirement in vmrun.preconditions() {
-                println!("requirement: {requirement:?}");
-                if !requirement.is_satisfied() {
-                    println!("not satisfied");
-                    return Err(VmRunError::PreconditionFailure(
-                            requirement.warning()));
+
+            // if the user put "fix": true, we apply the known fix to the device
+            for emulation in vmrun.emulations.iter() {
+                let cond = emulation.preconditions();
+                if let Err(assertion) = cond.check() {
+                    if assertion.is_recoverable() && 
+                        (emulation.want_fix 
+                            || args.force 
+                            || ask_yesno(assertion.recovery_prompt())) {
+                        assertion.recover(); 
+                    }
+                }
+            }
+
+            let condition = vmrun.preconditions();
+            match condition.check() {
+                Ok(()) => (),
+                Err(assertion) => {
+                    println!("{}", assertion.print("vm".to_string()));
+                    if !assertion.is_recoverable() {
+                        return Err(VmRunError::PreconditionFailure("One of more fatal failure encountered".to_string()));
+                    }
                 }
             }
         }
 
-        let run_result = vm_run_session(args, &vmrun);
+        let run_result = vm_run_session(args, vm, &vmrun);
 
         for object in vmrun.ephemeral_objects() {
             match object.release() {
                 Err(error) => {
-                    if args.panic_on_failed_cleaup {
+                    if args.panic_on_failed_cleanup {
                         panic!("Error occured when cleaning up: {}", error);
                     } else {
                         eprintln!("warn: Error occured when cleaning up: {}", error);
@@ -250,10 +280,6 @@ fn write_pid_file<P: AsRef<std::path::Path>>(path: P, pid: u32)
     Ok(())
 }
 
-extern "C" {
-    pub fn daemon(_: c_int, _: c_int) -> c_int;
-}
-
 fn main() {
     let args = Arguments::parse();
     let mut content: String = String::new();
@@ -275,17 +301,15 @@ fn main() {
         }
     }
 
-    let vm: spec::VmSpec = serde_json::from_str(&content).expect("malformed config");
+    let vm_err: Result<spec::VmSpec, _> = serde_json::from_str(&content)
+        .map_err(|err| format_serde_error::SerdeError::new(content.to_string(), err));
 
-    if args.daemon {
-        if args.vm_pid_file.is_none() || args.supervisor_pid_file.is_none() {
-            return;
-        } else {
-            unsafe {
-                daemon(0, 0);
-            }
-        }
+    if let Err(e) = vm_err {
+        eprintln!("{e}");
+        process::exit(4);
     }
+
+    let vm = vm_err.unwrap();
 
     match vm_main(&args, &vm) {
         Err(error) => println!("vmrun exited with error: {}", error),

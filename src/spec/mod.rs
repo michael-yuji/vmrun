@@ -1,16 +1,19 @@
 
 mod decoding;
 mod util;
+mod defaults;
 
 use crate::spec::util::PciSlotGenerator;
 use crate::util::{parse_mem_in_kb, vec_sequence_map};
-use crate::vm::{CpuSpec, UefiBoot, PciSlot, EmulatedPciDevice, RawEmulatedPci, LpcDevice, VmRun, EmulatedPci};
+use crate::vm::{CpuSpec, UefiBoot, PciSlot, EmulatedPciDevice, LpcDevice, VmRun};
 
 use decoding::Emulation;
 use serde::{Deserialize, Deserializer, de};
 use std::str::FromStr;
 use std::collections::HashMap;
 use thiserror::Error;
+
+use defaults::*;
 
 #[derive(Error, Debug)]
 pub enum FormatError {
@@ -20,7 +23,7 @@ pub enum FormatError {
     #[error("Invalid value {0}")]
     InvalidValue(std::num::ParseIntError),
 
-    #[error("Invalid format for pci slot($bus/$slot/$func): {0}")]
+    #[error("Invalid format for pci slot. Expected: \"$bus:$slot:$func\". Got: \"{0}\"")]
     InvalidPciSlotRepr(String),
 
     #[error("Invalid value({value}) for {component} in PCI slot. Max: {max}")]
@@ -32,9 +35,6 @@ pub enum FormatError {
     #[error("Cannot find a slot on bus 0 for hostbridge")]
     HostbridgeSlotNotSatisfy,
 
-    #[error("Incorrect emulation line")]
-    IncorrectEmulation,
-
     #[error("Run out of all Pcie slots")]
     RunOutOfSlots,
 
@@ -44,7 +44,7 @@ pub enum FormatError {
 
 fn yes() -> bool { true  }
 fn no()  -> bool { false }
-fn default_hostbridge() -> String { "hostbridge".to_string() }
+
 fn empty_hashmap() -> HashMap<String, VmSpecMod> {
     HashMap::new()
 }
@@ -56,13 +56,17 @@ pub struct VmSpec {
 
     pub cpu: CpuSpec,
     pub mem: MemorySpec,
+
     #[serde(flatten)]
-    pub bootopt: BootOptions,
+    pub bootopt: Option<BootOptions>,
+
     pub emulations: Vec<Emulation>,
     pub name: String,
 
     #[serde(default = "default_hostbridge")]
     pub hostbridge: String,
+
+    pub lpc_slot: Option<PciSlot>,
 
     /* currently bhyve supports only up to 4 console ports,
      * if we implement a general N console port model, the model may ended up
@@ -110,7 +114,9 @@ pub struct VmSpec {
     #[serde(default = "empty_hashmap")]
     pub targets: HashMap<String, VmSpecMod>,
 
-    pub next_target: Option<String>
+    pub next_target: Option<String>,
+
+    pub post_start_script: Option<String>
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -132,7 +138,8 @@ pub struct VmSpecMod {
     pub force_msi:      Option<bool>,
     pub disable_mptable_gen: Option<bool>,
     pub extra_options:       Option<String>,
-    pub next_target: Option<String>
+    pub next_target: Option<String>,
+    pub post_start_script: Option<String>
 }
 
 macro_rules! replace_if_some {
@@ -153,7 +160,7 @@ impl VmSpec
     pub fn consume(&mut self, patch: &VmSpecMod) {
         replace_if_some!(self, patch, cpu);
         replace_if_some!(self, patch, mem);
-        replace_if_some!(self, patch, bootopt);
+        replace_if_some!(self, patch, ?bootopt);
         replace_if_some!(self, patch, ?gdb);
         replace_if_some!(self, patch, ?com1);
         replace_if_some!(self, patch, ?com2);
@@ -168,6 +175,7 @@ impl VmSpec
         replace_if_some!(self, patch, disable_mptable_gen);
         replace_if_some!(self, patch, ?extra_options);
         replace_if_some!(self, patch, ?next_target);
+        replace_if_some!(self, patch, ?post_start_script);
 
         self.emulations.extend(patch.emulations.clone());
     }
@@ -179,7 +187,7 @@ impl VmSpec
         clone
     }
 
-    pub fn build(&self, extra_opts: &Vec<String>) -> Result<VmRun, FormatError>
+    pub fn build(&self, extra_opts: &[String]) -> Result<VmRun, FormatError>
     {
         let mut argv: Vec<String> = Vec::new();
 
@@ -187,8 +195,12 @@ impl VmSpec
         let mut lpcs: Vec<crate::vm::LpcDevice> = Vec::new();
 
         /* slots explicitly specified in the configuration */
-        let slots_taken: Vec<PciSlot> = 
+        let mut slots_taken: Vec<PciSlot> = 
             self.emulations.iter().filter_map(|e| e.slot).collect();
+
+        if let Some(lpc_slot) = self.lpc_slot {
+            slots_taken.push(lpc_slot);
+        }
 
         let mut slot_gen = PciSlotGenerator::build(0, 0, slots_taken);
 
@@ -196,48 +208,29 @@ impl VmSpec
             .ok_or(FormatError::HostbridgeSlotNotSatisfy)?;
 
         /* try to stick with convention to put lpc in 0,31, but when it is 
-         * unavailable, we fetch the next slot available in bus 0; however 
-         * if none of the slots are available in bus 0, we need to abort
-         * as lpc only works on bus 0
+         * unavailable, we fetch the next slot available in bus.
          */
-        let lpc_slot = slot_gen.try_take_specific_bus_slot(0, 31)
-                         .or_else(|| slot_gen.try_take_specific_bus(0))
-                         .ok_or(FormatError::LpcSlotNotSatisfy)?;
+        let lpc_slot = match self.lpc_slot {
+            None => slot_gen.try_take_specific_bus_slot(0, 31).ok_or(FormatError::LpcSlotNotSatisfy)?,
+            Some(slot) => slot
+        };
 
-        match &self.bootopt {
+        let bootopt = self.bootopt.clone().unwrap_or_else(default_bootopt);
+
+        match bootopt {
             BootOptions::Uefi(UefiBoot { bootrom, varfile }) =>
-                lpcs.push(LpcDevice::Bootrom(bootrom.to_string(), varfile.clone()))
+                lpcs.push(LpcDevice::Bootrom(bootrom, varfile))
         };
 
         let mut extra_options = 
             if let Some(opts) = &self.extra_options {
                 opts.split(' ')
                    .filter_map(|s|{ 
-                       if s.len() == 0 { None } else { Some(s.to_string()) }
+                       if s.is_empty() { None } else { Some(s.to_string()) }
                }).collect()
         } else { vec![] };
 
-        extra_options.extend(extra_opts.clone());
-
-        emus.push(EmulatedPciDevice { 
-            slot: hostbdg_slot, 
-            emulation: RawEmulatedPci { 
-                frontend: "hostbridge".to_string(), 
-        device:   "hostbridge".to_string(),
-                backend: None, 
-                options: vec![]
-            }
-        });
-
-        emus.push(EmulatedPciDevice { 
-            slot: lpc_slot, 
-            emulation: RawEmulatedPci { 
-                frontend: "lpc".to_string(), 
-        device:   "lpc".to_string(),
-                backend: None, 
-                options: vec![]
-            }
-        });
+        extra_options.extend(extra_opts.to_owned());
 
         for emulation in &self.emulations {
             let the_slot = 
@@ -248,7 +241,8 @@ impl VmSpec
                 }?;
 
             emus.push(crate::vm::EmulatedPciDevice {
-                slot: the_slot, emulation: emulation.to_vm_emu()? });
+                slot: the_slot, want_fix: emulation.fix,
+                emulation: emulation.to_vm_emu()? });
         }
 
         if let Some(com) = &self.com1 {
@@ -271,21 +265,26 @@ impl VmSpec
             let slot = slot_gen.next_slot().ok_or(FormatError::RunOutOfSlots)?;
             emus.push(EmulatedPciDevice {
                 slot,
-                emulation: graphic.to_emulated()
+                want_fix: false,
+                emulation: Box::new(graphic.to_emulated())
             });
 
             if graphic.xhci_table {
                 let slot = slot_gen.next_slot().ok_or(FormatError::RunOutOfSlots)?;
                 emus.push(EmulatedPciDevice {
-                    slot, emulation: crate::vm::emulation::Xhci { }.as_raw() })
+                    want_fix: false,
+                    slot, emulation: Box::new(crate::vm::emulation::Xhci {}) })
             }
         }
 
         argv.push(self.name.clone());
 
         Ok(crate::vm::VmRun {
-            cpu: self.cpu.clone(),
+            cpu: self.cpu,
             mem_kb: self.mem.kb,
+            hostbridge_slot: hostbdg_slot,
+            hostbridge_brand: self.hostbridge.to_string(),
+            lpc_slot,
             lpc_devices: lpcs,
             emulations: emus,
             name: self.name.to_string(),
@@ -353,7 +352,7 @@ pub struct GraphicOption {
 }
 
 impl GraphicOption {
-    fn to_emulated(&self) -> RawEmulatedPci {
+    fn to_emulated(&self) -> crate::vm::emulation::Framebuffer {
         crate::vm::emulation::Framebuffer {
             host: self.host.to_string(),
             port: self.port,
@@ -362,54 +361,41 @@ impl GraphicOption {
             w: self.width,
             h: self.height,
             wait: self.wait
-        }.as_raw()
+        }
+    }
+}
+
+impl PciSlot {
+    #[allow(dead_code)]
+    fn from_bhyve_vpci_slot(s: &str) -> Result<PciSlot, FormatError> {
+        let pci = PciSlot::from_str(s)?;
+        if pci.slot > 31 {
+            Err(FormatError::PciSlotValueOverflow { component: "slot", value: pci.slot, max: 31 })
+        } else if pci.func > 7 {
+            Err(FormatError::PciSlotValueOverflow { component: "func", value: pci.slot, max: 7 })
+        } else {
+            Ok(pci)
+        }
     }
 }
 
 impl FromStr for PciSlot
 {
     type Err = FormatError;
-
-    fn from_str(s: &str) -> Result<PciSlot, Self::Err>
-    {
-        let comps: Vec<&str> = s.split('/').collect();
-
-        let nums: Vec<u8> = vec_sequence_map(
-            &comps, |m| m.parse().map_err(|e| FormatError::InvalidValue(e)))?;
-
+    fn from_str(s: &str) -> Result<PciSlot, Self::Err> {
+        let comps: Vec<&str> = s.split(':').collect();
         if comps.len() > 3 || comps.len() == 2 {
-            return Err(FormatError::InvalidPciSlotRepr(s.to_string()));
-        }
+            Err(FormatError::InvalidPciSlotRepr(s.to_string()))
+        } else {
+            let nums = vec_sequence_map(&comps, |m| m.parse()
+              .map_err(|_| FormatError::InvalidPciSlotRepr(s.to_string())))?;
 
-        fn assert_v(component: &'static str, value: u8, max: u8)
-            -> Result<u8, FormatError>
-        {
-            if value > max {
-                Err(FormatError::PciSlotValueOverflow { component
-                                                      , value
-                                                      , max })
-            } else {
-                Ok(value)
-            }
-        }
-
-        match nums.len() {
-            1 => 
-                assert_v("slot", nums[0], 31)
-                 .map(|slot| PciSlot { bus: 0, slot, func: 0 }),
-            2 => {
-                let slot = assert_v("slot", nums[0], 31)?;
-                let func = assert_v("func", nums[1], 7)?;
-                Ok(PciSlot { bus: 0, slot, func })
-            },
-            3 => {
-                let bus  = assert_v("bus",  nums[0], 255)?;
-                let slot = assert_v("slot", nums[1], 31)?;
-                let func = assert_v("func", nums[2], 7)?;
-
-                Ok(PciSlot { bus, slot, func })
-            }
-            _ => todo!() /* impossible */
+            Ok(match nums.len() {
+                1 => PciSlot { bus: 0, slot: nums[0], func: 0 },
+                2 => PciSlot { bus: 0, slot: nums[0], func: nums[1] },
+                3 => PciSlot { bus: nums[0], slot: nums[1], func: nums[2] },
+                _ => todo!() /* unreachable */
+            })
         }
     }
 }
@@ -454,8 +440,6 @@ impl<'de> Deserialize<'de> for CpuSpec {
         })
     }
 }
-
-
 
 #[derive(Debug, Copy, Clone)]
 pub struct MemorySpec { pub kb: usize }

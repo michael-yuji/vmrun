@@ -4,10 +4,12 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.58"
 clap = { version = "3.1.15", features = ["derive"] }
+format_serde_error = "0.3"
 num-traits = "0.2.14"
 paste = "1.0.7"
 serde = { version = "1.0.137", features = ["derive"] }
 serde_json = "1.0.79"
 thiserror = "1.0.31"
-
+command-macros = "0.2.9"
