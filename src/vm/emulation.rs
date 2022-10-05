@@ -208,8 +208,7 @@ impl BhyveDev for Framebuffer {
 
 impl EmulatedPci for Framebuffer {
     fn as_bhyve_arg(&self) -> String {
-        let mut base = format!("fbuf,host={}", self.host);
-        push_on_kv!(base, self, port);
+        let mut base = format!("fbuf,tcp={}:{}", self.host, self.port.unwrap_or(5900));
         push_on_kv!(base, self, w);
         push_on_kv!(base, self, h);
         push_on_kv!(base, self, vga);
