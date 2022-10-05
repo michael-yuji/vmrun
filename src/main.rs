@@ -1,7 +1,6 @@
-
-mod vm;
 mod spec;
 mod util;
+mod vm;
 
 use clap::Parser;
 use spec::FormatError;
@@ -20,13 +19,13 @@ enum VmRunError {
     #[error("One of more precondition failed: {0}")]
     PreconditionFailure(String),
     #[error("{0}")]
-    IoError(std::io::Error)
+    IoError(std::io::Error),
 }
 
 /* To work around clap */
 #[derive(Debug)]
 struct ArgVec<T> {
-    vec: Vec<T>
+    vec: Vec<T>,
 }
 
 impl<T: PartialEq> ArgVec<T> {
@@ -38,7 +37,6 @@ impl<T: PartialEq> ArgVec<T> {
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 struct Arguments {
-
     /// Boot wth a target (boot option) specified in the config file
     #[clap(short, long)]
     target: Option<String>,
@@ -46,7 +44,7 @@ struct Arguments {
     /// The location of the Json configuration file. If `config` is `-`, the
     /// configuratino will read from the stdin stream instead.
     #[clap(short, long, value_name = "FILE")]
-    config:  String,
+    config: String,
 
     /// Do not follow reboots initiated by the guest
     #[clap(long)]
@@ -92,14 +90,15 @@ struct Arguments {
 
     /// arguments that get passed directly to bhyve
     #[clap(raw = true, value_name = "BHYVE_ARGS")]
-    extra_bhyve_args: Vec<String>
+    extra_bhyve_args: Vec<String>,
 }
 
 fn arg_to_vec(s: &str) -> Result<ArgVec<i32>, &'static str> {
     let parts = s.split(',');
     let mut vec = Vec::<i32>::new();
     for part in parts {
-        let int = part.parse::<i32>()
+        let int = part
+            .parse::<i32>()
             .map_err(|_e| "invalid value encountered while parsing i32 list")?;
         vec.push(int);
     }
@@ -114,56 +113,68 @@ fn ask_yesno(question: String) -> bool {
     buffer.starts_with('Y') || buffer.starts_with('y')
 }
 
-fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
-{
+fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError> {
     let mut spec = vm.clone();
     let mut reboot_count = 0;
     let mut next_target = args.target.clone();
     let mut exit_code: i32;
 
-    fn vm_run_session(args: &Arguments, spec: &spec::VmSpec, vmrun: &vm::VmRun) -> Result<i32, VmRunError>
-    {
+    fn vm_run_session(
+        args: &Arguments,
+        spec: &spec::VmSpec,
+        vmrun: &vm::VmRun,
+    ) -> Result<i32, VmRunError> {
         let bootargs = vmrun.bhyve_args().map_err(VmRunError::VmErr)?;
         let hyve = std::option_env!("BHYVE_EXEC").unwrap_or("bhyve");
 
         if args.debug {
-            println!("{:#?}", vmrun);
+            eprintln!("{:#?}", vmrun);
         }
 
         if args.dry_run || args.debug {
-            print!("{} ", hyve);
+            eprint!("{} ", hyve);
             for arg in bootargs {
-                print!("{} ", arg);
+                eprint!("{} ", arg);
             }
-            println!();
+            eprintln!();
             return Ok(0);
         }
 
         let pid_file = match &args.vm_pid_file {
             Some(pid_file) => Some(open_pid_file(pid_file)?),
-            None => None
+            None => None,
         };
 
         let dev = std::path::PathBuf::from(format!("/dev/vmm/{}", vmrun.name));
         if dev.exists() && args.force {
             std::process::Command::new("bhyvectl")
-                .arg("--destroy").arg(format!("--vm={}", vmrun.name))
-                .spawn().ok().unwrap();
+                .arg("--destroy")
+                .arg(format!("--vm={}", vmrun.name))
+                .spawn()
+                .ok()
+                .unwrap();
         }
 
-        let mut process = std::process::Command::new(hyve).args(&bootargs).spawn().ok().unwrap();
+        let mut process = std::process::Command::new(hyve)
+            .args(&bootargs)
+            .spawn()
+            .ok()
+            .unwrap();
 
         if let Some(mut pid_file) = pid_file {
-            pid_file.write(process.id().to_string().as_bytes())
+            pid_file
+                .write(process.id().to_string().as_bytes())
                 .map_err(VmRunError::IoError)?;
         }
 
         if let Some(action) = &spec.post_start_script {
             let args: Vec<&str> = action.split(' ').collect();
-            println!("args: {args:?}");
-            let mut p = std::process::Command::new(args[0]).args(&args[1..]).spawn().ok().unwrap();
+            let mut p = std::process::Command::new(args[0])
+                .args(&args[1..])
+                .spawn()
+                .ok()
+                .unwrap();
             p.wait().ok().unwrap();
-
         }
 
         let exit_status = process.wait().ok().unwrap();
@@ -186,21 +197,22 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 
         next_target = spec.next_target.clone();
 
-        let vmrun = spec.build(&args.extra_bhyve_args)
+        let vmrun = spec
+            .build(&args.extra_bhyve_args)
             .map_err(VmRunError::SpecErr)?;
 
         // Check if every requirements are archieved before handing to bhyve
         if !args.no_requirement_check {
-
             // if the user put "fix": true, we apply the known fix to the device
             for emulation in vmrun.emulations.iter() {
                 let cond = emulation.preconditions();
                 if let Err(assertion) = cond.check() {
-                    if assertion.is_recoverable() && 
-                        (emulation.want_fix 
-                            || args.force 
-                            || ask_yesno(assertion.recovery_prompt())) {
-                        assertion.recover(); 
+                    if assertion.is_recoverable()
+                        && (emulation.want_fix
+                            || args.force
+                            || ask_yesno(assertion.recovery_prompt()))
+                    {
+                        assertion.recover();
                     }
                 }
             }
@@ -211,13 +223,19 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
                 Err(assertion) => {
                     println!("{}", assertion.print("vm".to_string()));
                     if !assertion.is_recoverable() {
-                        return Err(VmRunError::PreconditionFailure("One of more fatal failure encountered".to_string()));
+                        return Err(VmRunError::PreconditionFailure(
+                            "One of more fatal failure encountered".to_string(),
+                        ));
                     }
                 }
             }
         }
 
         let run_result = vm_run_session(args, vm, &vmrun);
+
+        if args.debug || args.dry_run {
+            return Ok(0);
+        }
 
         for object in vmrun.ephemeral_objects() {
             match object.release() {
@@ -227,8 +245,8 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
                     } else {
                         eprintln!("warn: Error occured when cleaning up: {}", error);
                     }
-                },
-                Ok(_) => continue
+                }
+                Ok(_) => continue,
             }
         }
 
@@ -236,47 +254,54 @@ fn vm_main(args: &Arguments, vm: &spec::VmSpec) -> Result<i32, VmRunError>
 
         /* if exit code is 0, it means the guest wanna reboot */
         if reboot_count < args.reboot_count.unwrap_or(usize::MAX)
-            && args.reboot_on.contains(&exit_code) && run_result.is_ok()
-            && !args.dry_run && !args.no_reboot
+            && args.reboot_on.contains(&exit_code)
+            && run_result.is_ok()
+            && !args.dry_run
+            && !args.no_reboot
         {
             reboot_count += 1;
-            continue
+            continue;
         } else {
             _ = run_result?;
-            break
+            break;
         }
-    };
-    
+    }
+
     Ok(exit_code)
 }
 
-fn open_pid_file<P: AsRef<std::path::Path>>(path: P) 
-  -> Result<std::fs::File, VmRunError>
-{
+fn open_pid_file<P: AsRef<std::path::Path>>(path: P) -> Result<std::fs::File, VmRunError> {
     if let Ok(metadata) = std::fs::metadata(path.as_ref()) {
         if !metadata.is_file() {
-            Err(VmRunError::PreconditionFailure(
-                format!("{:?} is not a regular file", path.as_ref())))
+            Err(VmRunError::PreconditionFailure(format!(
+                "{:?} is not a regular file",
+                path.as_ref()
+            )))
         } else if metadata.permissions().readonly() {
-            Err(VmRunError::PreconditionFailure(
-                format!("{:?} is not writable", path.as_ref())))
+            Err(VmRunError::PreconditionFailure(format!(
+                "{:?} is not writable",
+                path.as_ref()
+            )))
         } else {
-            std::fs::File::options().write(true).open(path)
+            std::fs::File::options()
+                .write(true)
+                .open(path)
                 .map_err(VmRunError::IoError)
         }
     } else if let Some(_parent) = path.as_ref().parent() {
         std::fs::File::create(path).map_err(VmRunError::IoError)
     } else {
-        Err(VmRunError::PreconditionFailure(
-           format!("Parent to {:?} is not available", path.as_ref())))
+        Err(VmRunError::PreconditionFailure(format!(
+            "Parent to {:?} is not available",
+            path.as_ref()
+        )))
     }
 }
 
-fn write_pid_file<P: AsRef<std::path::Path>>(path: P, pid: u32) 
-    -> Result<(), VmRunError> 
-{
+fn write_pid_file<P: AsRef<std::path::Path>>(path: P, pid: u32) -> Result<(), VmRunError> {
     let mut file = open_pid_file(path)?;
-    file.write(pid.to_string().as_bytes()).map_err(VmRunError::IoError)?;
+    file.write(pid.to_string().as_bytes())
+        .map_err(VmRunError::IoError)?;
     Ok(())
 }
 
@@ -284,15 +309,15 @@ fn main() {
     let args = Arguments::parse();
     let mut content: String = String::new();
 
-    content = 
-        if args.config.as_str() == "-" {
-            let mut stdin = std::io::stdin();
-            stdin.read_to_string(&mut content).expect("Error reading stdin");
-            content
-        } else {
-            std::fs::read_to_string(&args.config)
-               .expect("fail to read configuration file")
-        };
+    content = if args.config.as_str() == "-" {
+        let mut stdin = std::io::stdin();
+        stdin
+            .read_to_string(&mut content)
+            .expect("Error reading stdin");
+        content
+    } else {
+        std::fs::read_to_string(&args.config).expect("fail to read configuration file")
+    };
 
     if let Some(file) = &args.supervisor_pid_file {
         if let Err(err) = write_pid_file(file, process::id()) {
@@ -313,6 +338,6 @@ fn main() {
 
     match vm_main(&args, &vm) {
         Err(error) => println!("vmrun exited with error: {}", error),
-        Ok(exit_code) => std::process::exit(exit_code)
+        Ok(exit_code) => std::process::exit(exit_code),
     }
 }

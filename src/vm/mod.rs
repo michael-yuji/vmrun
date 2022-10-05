@@ -2,12 +2,12 @@ use std::cmp::Ordering;
 
 use crate::util::assertion::Assertion;
 use crate::vm::conditions::{
-    Condition, ValidBhyveVPciSlot, Existence, FsEntity, NoCond, 
-    NestedConditions, GenericFatalCondition, KernelFeature
+    Condition, Existence, FsEntity, GenericFatalCondition, KernelFeature, NestedConditions, NoCond,
+    ValidBhyveVPciSlot,
 };
 
-pub mod emulation;
 pub mod conditions;
+pub mod emulation;
 
 type Result<T> = std::result::Result<T, Assertion>;
 
@@ -15,10 +15,8 @@ pub trait BhyveDev {
     fn preconditions(&self) -> Box<dyn conditions::Condition>;
 }
 
-
 #[derive(Debug)]
-pub struct VmRun
-{
+pub struct VmRun {
     pub cpu: CpuSpec,
 
     pub mem_kb: usize,
@@ -54,12 +52,11 @@ pub struct VmRun
 
     pub power_off_destroy_vm: bool,
 
-    pub extra_options: Vec<String>
+    pub extra_options: Vec<String>,
 }
 
 impl BhyveDev for VmRun {
     fn preconditions(&self) -> Box<dyn Condition> {
-
         let mut emuc = vec![];
         let mut lpc = vec![];
 
@@ -74,8 +71,9 @@ impl BhyveDev for VmRun {
             // Do not exit early to collect all possible issue with the config
             if lpc_seen.contains(&id) {
                 lpc.push(GenericFatalCondition::new_boxed(
-                        "duplicated_lpc_device",
-                        format!("lpc device {id} are specified more than once").as_str()));
+                    "duplicated_lpc_device",
+                    format!("lpc device {id} are specified more than once").as_str(),
+                ));
             } else {
                 lpc_seen.push(lpc_device.identifier());
             }
@@ -83,16 +81,23 @@ impl BhyveDev for VmRun {
             lpc.push(lpc_device.preconditions());
         }
 
-        let nc = Box::new(NestedConditions { name: "vpci".to_string(), conditions: emuc });
-        let lc = Box::new(NestedConditions { name: "lpc".to_string(), conditions: lpc });
+        let nc = Box::new(NestedConditions {
+            name: "vpci".to_string(),
+            conditions: emuc,
+        });
+        let lc = Box::new(NestedConditions {
+            name: "lpc".to_string(),
+            conditions: lpc,
+        });
 
-        Box::new(NestedConditions { name: "vm".to_string(), conditions: vec![nc, lc] })
+        Box::new(NestedConditions {
+            name: "vm".to_string(),
+            conditions: vec![nc, lc],
+        })
     }
 }
 
-
-impl VmRun
-{
+impl VmRun {
     pub fn ephemeral_objects(&self) -> Vec<Resource> {
         let mut ephemeral_objects = vec![];
         for emulation in self.emulations.iter() {
@@ -101,22 +106,33 @@ impl VmRun
         ephemeral_objects
     }
 
-    pub fn bhyve_args(&self) -> Result<Vec<String>>
-    {
+    pub fn using_stdio_as_serial(&self) -> bool {
+        self.lpc_devices.iter().any(|lpc_device| {
+            if let LpcDevice::Com(_, device) = lpc_device {
+                device == "stdio"
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn bhyve_args(&self) -> Result<Vec<String>> {
         let mut argv: Vec<String> = Vec::new();
 
         self.preconditions().check()?;
 
         let mut push_yesno = |cond: bool, value: &'static str| {
-            if cond { argv.push(value.to_string()) }
+            if cond {
+                argv.push(value.to_string())
+            }
         };
 
-        push_yesno(self.generate_acpi,        "-A");
-        push_yesno(self.wire_guest_mem,       "-S");
-        push_yesno(self.yield_on_hlt,         "-H");
-        push_yesno(self.force_msi,            "-W");
-        push_yesno(self.disable_mptable_gen,  "-Y");
-        push_yesno(self.utc_clock,            "-u");
+        push_yesno(self.generate_acpi, "-A");
+        push_yesno(self.wire_guest_mem, "-S");
+        push_yesno(self.yield_on_hlt, "-H");
+        push_yesno(self.force_msi, "-W");
+        push_yesno(self.disable_mptable_gen, "-Y");
+        push_yesno(self.utc_clock, "-u");
         push_yesno(self.power_off_destroy_vm, "-D");
 
         let mut push_arg_pair = |key: &'static str, value: String| {
@@ -135,25 +151,26 @@ impl VmRun
             push_arg_pair("-U", uuid.to_string());
         }
 
-        push_arg_pair("-s", format!("{},{}", self.hostbridge_slot.as_bhyve_arg(), self.hostbridge_brand));
+        push_arg_pair(
+            "-s",
+            format!(
+                "{},{}",
+                self.hostbridge_slot.as_bhyve_arg(),
+                self.hostbridge_brand
+            ),
+        );
         push_arg_pair("-s", format!("{},lpc", self.lpc_slot.as_bhyve_arg()));
 
         for emulation in self.emulations.iter() {
-            push_arg_pair("-s", emulation.to_bhyve_arg());
+            argv.extend(emulation.to_bhyve_args());
         }
 
-        // This logic is now handled by the precondition checks so we don't have
-        // to worry about it, but it is nice to have some reminder of this requirement
-        // here
-        /*
-        if self.lpc_devices.is_empty() {
-            return Err(VmError::NoLpc);
-        }
-        */
+        // Check for existence of lpc devices is done by precondition hooks
 
         if !self.lpc_devices.is_empty() {
             for lpc in &self.lpc_devices {
-                push_arg_pair("-l", lpc.to_bhyve_arg());
+                argv.push("-l".to_string());
+                argv.push(lpc.to_bhyve_arg());
             }
         }
 
@@ -168,7 +185,7 @@ impl VmRun
 pub enum LpcDevice {
     Com(u8, String),
     Bootrom(String, Option<String>),
-    TestDev
+    TestDev,
 }
 
 impl LpcDevice {
@@ -176,7 +193,7 @@ impl LpcDevice {
         match self {
             LpcDevice::Bootrom(..) => "bootrom".to_string(),
             LpcDevice::Com(i, ..) => format!("com{i}"),
-            LpcDevice::TestDev => "testdev".to_string()
+            LpcDevice::TestDev => "testdev".to_string(),
         }
     }
 }
@@ -185,21 +202,30 @@ impl BhyveDev for LpcDevice {
     fn preconditions(&self) -> Box<dyn Condition> {
         match self {
             LpcDevice::Bootrom(bootrom, bootvars) => {
-                let mut base: Vec<Box<dyn Condition>> = vec![Box::new(Existence { resource: FsEntity::File(std::path::PathBuf::from(bootrom)) })];
+                let mut base: Vec<Box<dyn Condition>> = vec![Box::new(Existence {
+                    resource: FsEntity::File(std::path::PathBuf::from(bootrom)),
+                })];
                 if let Some(bootvars) = bootvars {
                     let vars = std::path::PathBuf::from(bootvars);
-                    base.push(Box::new(Existence { resource: FsEntity::File(vars) }));
+                    base.push(Box::new(Existence {
+                        resource: FsEntity::File(vars),
+                    }));
                 }
-                
-                Box::new(NestedConditions { name: "lpc".to_string(), conditions: base })
-            },
+
+                Box::new(NestedConditions {
+                    name: "lpc".to_string(),
+                    conditions: base,
+                })
+            }
             LpcDevice::Com(n, device) => {
                 let mut conditions = vec![];
                 // Bhyve so far support 3 com devices, com1 to com3
-                if let 1u8..=3 = n {} else {
+                if let 1u8..=3 = n {
+                } else {
                     conditions.push(GenericFatalCondition::new_boxed(
                         "invalid-com-number",
-                        "only com[1-3] are supported"));
+                        "only com[1-3] are supported",
+                    ));
                 }
 
                 // In Bhyve, serial port is either stdio or path to a nmdm device
@@ -211,41 +237,45 @@ impl BhyveDev for LpcDevice {
                         // can be mounted everywhere
                         let paths = otherwise.split('/').collect::<Vec<_>>();
                         match paths.last() {
-                            Some(node) if node.starts_with("nmdm") =>
-                                conditions.push(KernelFeature::new_boxed("nmdm")),
-                            _ =>
-                                conditions.push(GenericFatalCondition::new_boxed(
-                                    "invalid-com-device",
-                                    "com device must be either stdio or nmdm device"))
+                            Some(node) if node.starts_with("nmdm") => {
+                                conditions.push(KernelFeature::new_boxed("nmdm"))
+                            }
+                            _ => conditions.push(GenericFatalCondition::new_boxed(
+                                "invalid-com-device",
+                                "com device must be either stdio or nmdm device",
+                            )),
                         };
                     }
                 }
-                Box::new(NestedConditions { name: "lpc".to_string(), conditions })
+                Box::new(NestedConditions {
+                    name: "lpc".to_string(),
+                    conditions,
+                })
             }
-            _ => Box::new(NoCond {})
+            _ => Box::new(NoCond {}),
         }
     }
 }
 
-impl LpcDevice
-{
+impl LpcDevice {
     fn to_bhyve_arg(&self) -> String {
         match self {
             LpcDevice::Com(i, val) => format!("com{},{}", i, val),
-            LpcDevice::TestDev     => "pc-testdev".to_string(),
-            LpcDevice::Bootrom(firmware, varfile) => {
-                match varfile {
-                    Some(var) => format!("bootrom,{},{}", firmware, var),
-                    None      => format!("bootrom,{}", firmware)
-                }
-            }
+            LpcDevice::TestDev => "pc-testdev".to_string(),
+            LpcDevice::Bootrom(firmware, varfile) => match varfile {
+                Some(var) => format!("bootrom,{},{}", firmware, var),
+                None => format!("bootrom,{}", firmware),
+            },
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetBackend {
-    Tap, Netgraph, Netmap, Vale
+    Tap,
+    Netgraph,
+    Netmap,
+    Vale,
 }
 
 impl ToString for NetBackend {
@@ -254,8 +284,9 @@ impl ToString for NetBackend {
             NetBackend::Tap => "tap",
             NetBackend::Netmap => "netmap",
             NetBackend::Netgraph => "netgraph",
-            NetBackend::Vale => "vale"
-        }.to_string()
+            NetBackend::Vale => "vale",
+        }
+        .to_string()
     }
 }
 
@@ -265,18 +296,15 @@ pub enum Resource {
     Iface(NetBackend, String),
     FsItem(String),
     Node(String),
-//    PassthruPci(PciSlot)
+    //    PassthruPci(PciSlot)
 }
 
 impl Resource {
-
     pub fn release(&self) -> Result<()> {
         match self {
-            Resource::FsItem(path) => 
-                std::fs::remove_file(path).map_err(Assertion::from_io_error),
-            Resource::Node(node) =>
-                std::fs::remove_file(node).map_err(Assertion::from_io_error),
-            _ => Ok(())
+            Resource::FsItem(path) => std::fs::remove_file(path).map_err(Assertion::from_io_error),
+            Resource::Node(node) => std::fs::remove_file(node).map_err(Assertion::from_io_error),
+            _ => Ok(()),
         }
     }
 }
@@ -284,26 +312,34 @@ impl Resource {
 impl std::string::ToString for Resource {
     fn to_string(&self) -> String {
         match self {
-            Resource::Iface(tpe, iface) => format!("network interface of type ({}): ({})", tpe.to_string(), iface),
+            Resource::Iface(tpe, iface) => format!(
+                "network interface of type ({}): ({})",
+                tpe.to_string(),
+                iface
+            ),
             Resource::FsItem(path) => format!("file: ({})", path),
-            Resource::Node(node)   => format!("node: ({})", node),
+            Resource::Node(node) => format!("node: ({})", node),
         }
     }
 }
 
-pub trait EmulatedPci: std::fmt::Debug + BhyveDev
-{
-    fn as_bhyve_arg(&self) -> String;
+#[derive(Debug, PartialEq, Eq)]
+pub enum BhyveArg {
+    Legacy(String),
+    Config(Vec<(String, String)>),
+}
+
+pub trait EmulatedPci: std::fmt::Debug + BhyveDev {
+    fn as_bhyve_arg(&self) -> BhyveArg;
 
     fn ephemeral_objects(&self) -> Vec<Resource> {
         vec![]
     }
-
 }
 
 #[derive(Debug, Clone)]
 pub struct RawEmulatedPci {
-    pub value: String
+    pub value: String,
 }
 
 impl BhyveDev for RawEmulatedPci {
@@ -313,8 +349,8 @@ impl BhyveDev for RawEmulatedPci {
 }
 
 impl EmulatedPci for RawEmulatedPci {
-    fn as_bhyve_arg(&self) -> String {
-        self.value.to_string()
+    fn as_bhyve_arg(&self) -> BhyveArg {
+        BhyveArg::Legacy(self.value.to_string())
     }
 }
 
@@ -322,39 +358,56 @@ impl EmulatedPci for RawEmulatedPci {
 pub struct EmulatedPciDevice {
     pub slot: PciSlot,
     pub want_fix: bool,
-    pub emulation: Box<dyn EmulatedPci>
+    pub emulation: Box<dyn EmulatedPci>,
 }
 
 impl BhyveDev for EmulatedPciDevice {
     fn preconditions(&self) -> Box<dyn Condition> {
-        let mut base: Vec<Box<dyn Condition>> = vec![Box::new(ValidBhyveVPciSlot { slot: self.slot })];
+        let mut base: Vec<Box<dyn Condition>> =
+            vec![Box::new(ValidBhyveVPciSlot { slot: self.slot })];
 
         let (bus, slot, func) = (self.slot.bus, self.slot.slot, self.slot.func);
         base.push(self.emulation.preconditions());
-        Box::new(NestedConditions
-            { name: format!("pci:{bus}:{slot}:{func}")
-            , conditions: base
-            })
+        Box::new(NestedConditions {
+            name: format!("pci:{bus}:{slot}:{func}"),
+            conditions: base,
+        })
     }
 }
 
 impl EmulatedPciDevice {
-    fn to_bhyve_arg(&self) -> String {
-        format!("{},{}", self.slot.as_bhyve_arg(), self.emulation.as_bhyve_arg())
+    fn to_bhyve_args(&self) -> Vec<String> {
+        match self.emulation.as_bhyve_arg() {
+            BhyveArg::Config(kvs) => {
+                let mut args = vec![];
+                for (key, value) in kvs.iter() {
+                    args.push("-o".to_string());
+                    args.push(format!(
+                        "pci.{}.{}.{}.{key}={value}",
+                        self.slot.bus, self.slot.slot, self.slot.func
+                    ));
+                }
+                args
+            }
+            BhyveArg::Legacy(args) => vec![
+                "-s".to_string(),
+                format!("{},{args}", self.slot.as_bhyve_arg()),
+            ], //format!("-s {},{args}", self.slot.as_bhyve_arg())
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct UefiBoot {
     pub bootrom: String,
-    pub varfile: Option<String>
+    pub varfile: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct CpuSpec {
     pub threads: usize,
-    pub cores:   usize,
-    pub sockets: usize
+    pub cores: usize,
+    pub sockets: usize,
 }
 
 impl CpuSpec {
@@ -362,16 +415,19 @@ impl CpuSpec {
         if self.sockets == 1 && self.cores == 1 {
             self.threads.to_string()
         } else {
-            format!("sockets={},threads={},cores={}", self.sockets, self.cores, self.threads)
+            format!(
+                "sockets={},threads={},cores={}",
+                self.sockets, self.cores, self.threads
+            )
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct PciSlot {
-    pub bus:  u8,
+    pub bus: u8,
     pub slot: u8,
-    pub func: u8
+    pub func: u8,
 }
 
 impl PciSlot {
@@ -405,4 +461,3 @@ impl PartialOrd for PciSlot {
         Some(self.cmp(other))
     }
 }
-

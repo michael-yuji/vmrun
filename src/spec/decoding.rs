@@ -1,27 +1,25 @@
-
-use serde::{Deserialize, Deserializer};
 use crate::spec::FormatError;
 use paste::paste;
+use serde::{Deserialize, Deserializer};
 
-use crate::vm::{RawEmulatedPci, EmulatedPci, PciSlot, NetBackend};
 use crate::vm::emulation::{
-    VirtioNet,
-    VirtioBlk, 
-    VirtioConsole, 
-    AhciHd, 
-    AhciCd,
-    PciPassthru
+    AhciCd, AhciHd, Nvme, NvmeBackend, PciPassthru, VirtioBlk, VirtioConsole, VirtioNet,
 };
+use crate::vm::{EmulatedPci, NetBackend, PciSlot, RawEmulatedPci};
 
-fn hmap_to_virtio_net<'de, D>(hmap: std::collections::HashMap<String, String>) 
-    -> Result<VirtioNet, D::Error>
-    where D: Deserializer<'de>
+fn hmap_to_virtio_net<'de, D>(
+    hmap: std::collections::HashMap<String, String>,
+) -> Result<VirtioNet, D::Error>
+where
+    D: Deserializer<'de>,
 {
-    let backend = hmap.get(&"name".to_string()).map(|s| s.as_str())
+    let backend = hmap
+        .get(&"name".to_string())
+        .map(|s| s.as_str())
         .ok_or_else(|| serde::de::Error::missing_field("name"))?;
 
     let tpe = match hmap.get(&"type".to_string()) {
-        None =>
+        None => {
             if backend.starts_with("tap") {
                 Ok(NetBackend::Tap)
             } else if backend.starts_with("netgraph") {
@@ -32,35 +30,40 @@ fn hmap_to_virtio_net<'de, D>(hmap: std::collections::HashMap<String, String>)
                 Ok(NetBackend::Vale)
             } else {
                 Err(serde::de::Error::unknown_variant(
-                        backend, &["tap*", "netgraph*", "netmap*", "vale*"]))
-            },
-        Some(tpe) =>
-            match tpe.as_str() {
-                "tap"      => Ok(NetBackend::Tap),
-                "netgraph" => Ok(NetBackend::Netgraph),
-                "netmap"   => Ok(NetBackend::Netmap),
-                "vale"     => Ok(NetBackend::Vale),
-                _          => 
-                    Err(serde::de::Error::unknown_variant(tpe.as_str(), &["tap", "netgraph", "netmap", "vale"]))
+                    backend,
+                    &["tap*", "netgraph*", "netmap*", "vale*"],
+                ))
             }
+        }
+        Some(tpe) => match tpe.as_str() {
+            "tap" => Ok(NetBackend::Tap),
+            "netgraph" => Ok(NetBackend::Netgraph),
+            "netmap" => Ok(NetBackend::Netmap),
+            "vale" => Ok(NetBackend::Vale),
+            _ => Err(serde::de::Error::unknown_variant(
+                tpe.as_str(),
+                &["tap", "netgraph", "netmap", "vale"],
+            )),
+        },
     }?;
 
-    let mtu = hmap.get(&"mtu".to_string()).and_then(|s| s.parse::<u32>().ok());
+    let mtu = hmap
+        .get(&"mtu".to_string())
+        .and_then(|s| s.parse::<u32>().ok());
     let mac = hmap.get(&"mac".to_string()).map(|s| s.to_string());
 
     Ok(VirtioNet {
         tpe,
         name: backend.to_string(),
         mtu,
-        mac
+        mac,
     })
-
 }
 
-impl<'de> Deserialize<'de> for VirtioNet
-{
+impl<'de> Deserialize<'de> for VirtioNet {
     fn deserialize<D>(deserializer: D) -> Result<VirtioNet, D::Error>
-        where D: Deserializer<'de>
+    where
+        D: Deserializer<'de>,
     {
         type Hmap = std::collections::HashMap<String, String>;
         let hmap = Hmap::deserialize(deserializer)?;
@@ -75,13 +78,13 @@ pub struct VirtioBlkDef {
     #[serde(default = "crate::spec::no")]
     pub nocache: bool,
     #[serde(default = "crate::spec::no")]
-    pub direct:  bool,
+    pub direct: bool,
     #[serde(default = "crate::spec::no")]
-    pub ro:      bool,
+    pub ro: bool,
     #[serde(default = "crate::spec::no")]
     pub nodelete: bool,
     pub logical_sector_size: Option<u32>,
-    pub physical_sector_size: Option<u32>
+    pub physical_sector_size: Option<u32>,
 }
 
 macro_rules! impl_ahci {
@@ -97,42 +100,104 @@ macro_rules! impl_ahci {
                 pub model: Option<String>
             }
         }
-    }
+    };
 }
 
 impl_ahci!(AhciHd);
 impl_ahci!(AhciCd);
 
+impl<'de> Deserialize<'de> for Nvme {
+    fn deserialize<D>(deserializer: D) -> Result<Nvme, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        type Hmap = std::collections::HashMap<String, serde_json::Value>;
+        let hmap = Hmap::deserialize(deserializer)?;
+        hmap_to_nvme::<'de, D>(hmap)
+    }
+}
+
+fn hmap_to_nvme<'de, D>(
+    hmap: std::collections::HashMap<String, serde_json::Value>,
+) -> Result<crate::vm::emulation::Nvme, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    macro_rules! take_str {
+        ($name:ident) => {
+            hmap.get(&stringify!($name).to_string())
+                .and_then(|v| v.as_str())
+                .ok_or_else::<D::Error, _>(|| serde::de::Error::missing_field(stringify!($name)))
+        };
+    }
+    macro_rules! take_uint {
+        ($name:ident, $t:ty) => {
+            hmap.get(&stringify!($name).to_string())
+                .and_then(|v| v.as_u64())
+                .map(|v| v as $t)
+                .ok_or_else::<D::Error, _>(|| serde::de::Error::missing_field(stringify!($name)))
+        };
+    }
+
+    let qsz: Option<u32> = take_uint!(qsz, u32).ok();
+    let ioslots = take_uint!(ioslots, u32).ok();
+    let sectsz = take_uint!(sectsz, u32).ok();
+    let ser = take_str!(ser).ok().map(|s| s.to_string());
+    let eui64 = take_uint!(eui64, u32).ok();
+    let dsm = take_str!(dsm).ok().map(|s| s.to_string());
+
+    match take_uint!(ram, usize) {
+        Ok(value) => Ok(Nvme {
+            qsz,
+            ioslots,
+            sectsz,
+            ser,
+            eui64,
+            dsm,
+            backend: NvmeBackend::Ram(value),
+        }),
+        Err(_) => {
+            let path = take_str!(path)?;
+            Ok(Nvme {
+                qsz,
+                ioslots,
+                sectsz,
+                ser,
+                eui64,
+                dsm,
+                backend: NvmeBackend::Path(path.to_string()),
+            })
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(remote = "crate::vm::emulation::VirtioConsole")]
 pub struct VirtioConsoleDef {
-    ports: Vec<String>
+    ports: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct PciPassthruX {
     src: Option<PciSlot>,
     lookup: Option<PciLookup>,
-    rom: Option<String>
+    rom: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct PciLookup {
     device: String,
-    vendor: String
+    vendor: String,
 }
 
 impl PciPassthruX {
     fn to_pci_passthru(self) -> Option<PciPassthru> {
         match self.src {
-            Some(src) => {
-                Some(PciPassthru { src, rom: self.rom })
-            },
+            Some(src) => Some(PciPassthru { src, rom: self.rom }),
             None => {
                 if self.lookup.is_none() {
                     None
                 } else {
-
                     let lookup = self.lookup.unwrap();
                     let vendor = lookup.vendor;
                     let device = lookup.device;
@@ -154,8 +219,15 @@ impl PciPassthruX {
                         let devices = crate::util::os::pci::PciDevice::from_pciconf_l();
 
                         for device in devices.iter() {
-                            if device.vendor == v1 && device.subvendor == v2 && device.device == d1 && device.subdevice == d2 {
-                                return Some(PciPassthru { src: device.slot, rom: self.rom });
+                            if device.vendor == v1
+                                && device.subvendor == v2
+                                && device.device == d1
+                                && device.subdevice == d2
+                            {
+                                return Some(PciPassthru {
+                                    src: device.slot,
+                                    rom: self.rom,
+                                });
                             }
                         }
 
@@ -208,11 +280,16 @@ pub enum Emulations {
     #[serde(rename = "passthru")]
     Passthru(PciPassthruX),
 
+    #[serde(rename = "nvme")]
+    Nvme(Nvme),
+
     #[serde(rename = "raw")]
-    Raw { value: String }
+    Raw { value: String },
 }
 
-fn serde_default_emulation_fix() -> bool { false }
+fn serde_default_emulation_fix() -> bool {
+    false
+}
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Emulation {
@@ -220,7 +297,7 @@ pub struct Emulation {
     #[serde(default = "serde_default_emulation_fix")]
     pub fix: bool,
     #[serde(flatten)]
-    pub emulation: Emulations
+    pub emulation: Emulations,
 }
 
 impl Emulation {
@@ -231,15 +308,16 @@ impl Emulation {
             Emulations::AhciCd(x) => Ok(Box::new(x.clone())),
             Emulations::AhciHd(x) => Ok(Box::new(x.clone())),
             Emulations::VirtioConsole(x) => Ok(Box::new(x.clone())),
-            Emulations::Passthru(x) => {
-                match x.clone().to_pci_passthru() {
-                    None => Err(FormatError::InvalidUnit("".to_string())),
-                    Some(passthru) => Ok(Box::new(passthru))
-                }
-            }
+            Emulations::Nvme(x) => Ok(Box::new(x.clone())),
+            Emulations::Passthru(x) => match x.clone().to_pci_passthru() {
+                None => Err(FormatError::InvalidUnit("".to_string())),
+                Some(passthru) => Ok(Box::new(passthru)),
+            },
 
-                //Ok(Box::new(x.clone())),
-            Emulations::Raw { value } => Ok(Box::new(RawEmulatedPci{ value: value.to_string() }))
+            //Ok(Box::new(x.clone())),
+            Emulations::Raw { value } => Ok(Box::new(RawEmulatedPci {
+                value: value.to_string(),
+            })),
         }
     }
 }

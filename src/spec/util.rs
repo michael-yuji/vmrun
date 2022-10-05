@@ -1,22 +1,19 @@
-
-use crate::vm::PciSlot;
 use crate::util::vec_exists;
+use crate::vm::PciSlot;
 
 #[derive(Debug)]
 pub struct PciSlotGenerator {
     bus: u8,
     slot: u8,
-    skip: Vec<PciSlot>
+    skip: Vec<PciSlot>,
 }
 
-impl PciSlotGenerator
-{
+impl PciSlotGenerator {
     pub fn build(bus: u8, slot: u8, skip: Vec<PciSlot>) -> PciSlotGenerator {
         Self { bus, slot, skip }
     }
 
-    pub fn try_take_specific_bus(&mut self, bus: u8) -> Option<PciSlot>
-    {
+    pub fn try_take_specific_bus(&mut self, bus: u8) -> Option<PciSlot> {
         if self.bus > bus {
             None
         } else if self.bus == bus {
@@ -25,7 +22,11 @@ impl PciSlotGenerator
             /* if self.bus < bus, we just issue them the first slot of the
              * requested bus
              */
-            let mut slot = PciSlot { bus, slot: 0, func: 0 };
+            let mut slot = PciSlot {
+                bus,
+                slot: 0,
+                func: 0,
+            };
 
             while self.skip.contains(&slot) {
                 if slot.slot == 31 {
@@ -41,16 +42,16 @@ impl PciSlotGenerator
     }
 
     #[allow(dead_code)]
-    pub fn try_take_specific_bus_slot(&mut self, bus: u8, slot: u8)
-        -> Option<PciSlot>
-    {
+    pub fn try_take_specific_bus_slot(&mut self, bus: u8, slot: u8) -> Option<PciSlot> {
         /* first check if if it's in any skipped one
          * if the local bus state is greated than requested,
          * we either can't issue it or already issued;
          * similarly, if self.bus == bus, we check if local slot state is greater.
          */
         if vec_exists(&self.skip, |s| s.bus == bus && s.slot == slot)
-            || self.bus > bus || (self.bus == bus && self.slot > slot) {
+            || self.bus > bus
+            || (self.bus == bus && self.slot > slot)
+        {
             None
         } else if self.bus == bus && self.slot == slot {
             /* if it turns out the requested slot is the next slot, issue it
@@ -65,14 +66,19 @@ impl PciSlotGenerator
     }
 
     pub fn next_slot(&mut self) -> Option<PciSlot> {
-        if self.bus == 255 && self.slot == 31 { None }
-        else {
+        if self.bus == 255 && self.slot == 31 {
+            None
+        } else {
             if self.slot == 31 {
                 self.bus += 1;
                 self.slot = 0;
                 self.next_slot()
             } else {
-                let ret = PciSlot { bus: self.bus, slot: self.slot, func: 0 };
+                let ret = PciSlot {
+                    bus: self.bus,
+                    slot: self.slot,
+                    func: 0,
+                };
                 self.slot += 1;
 
                 if self.skip.contains(&ret) {

@@ -1,11 +1,12 @@
-pub mod os;
 pub mod assertion;
+pub mod os;
 
-use num_traits::Num;
 use crate::spec::FormatError;
+use num_traits::Num;
 
-pub fn vec_exists<T, F>(vec: &[T], cond: F) -> bool 
-  where F: Fn(&T) -> bool
+pub fn vec_exists<T, F>(vec: &[T], cond: F) -> bool
+where
+    F: Fn(&T) -> bool,
 {
     for i in vec.iter() {
         if cond(i) {
@@ -17,7 +18,8 @@ pub fn vec_exists<T, F>(vec: &[T], cond: F) -> bool
 }
 
 pub fn vec_sequence_map<E, A, B, F>(vec: &[A], map: F) -> Result<Vec<B>, E>
-  where F: Fn(&A) -> Result<B, E>
+where
+    F: Fn(&A) -> Result<B, E>,
 {
     let mut v = Vec::new();
 
@@ -30,8 +32,9 @@ pub fn vec_sequence_map<E, A, B, F>(vec: &[A], map: F) -> Result<Vec<B>, E>
 }
 
 pub fn take_numeric<N: Num<FromStrRadixErr = std::num::ParseIntError>>(
-    parse_radix: bool, input: &str) -> Result<(N, &str), FormatError>
-{
+    parse_radix: bool,
+    input: &str,
+) -> Result<(N, &str), FormatError> {
     let mut char_view = input.char_indices();
     let mut index = 0;
     let mut parsed_radix = false;
@@ -41,11 +44,10 @@ pub fn take_numeric<N: Num<FromStrRadixErr = std::num::ParseIntError>>(
         match char_view.next() {
             None => {
                 break;
-            },
+            }
             Some((_, value)) => {
-
                 if parse_radix {
-                    /* the first index is 0, so we proceed to check if need to 
+                    /* the first index is 0, so we proceed to check if need to
                      * switch radix, base on the second index
                      */
                     if index == 0 && value == '0' {
@@ -73,36 +75,39 @@ pub fn take_numeric<N: Num<FromStrRadixErr = std::num::ParseIntError>>(
                          * only cosumed the first 0, which is the right behaviour
                          */
                     }
-
                 }
 
-                if value.is_digit(radix) { 
+                if value.is_digit(radix) {
                     index += 1;
                 } else {
-                    break
+                    break;
                 }
             }
         }
     }
 
-    let start: usize = 
-        if radix == 16 || radix == 2 { 2 } else if radix == 8 { 1 } else { 0 };
+    let start: usize = if radix == 16 || radix == 2 {
+        2
+    } else if radix == 8 {
+        1
+    } else {
+        0
+    };
 
-    let value = N::from_str_radix(&input[start..index], radix)
-        .map_err(FormatError::InvalidValue)?;
+    let value =
+        N::from_str_radix(&input[start..index], radix).map_err(FormatError::InvalidValue)?;
 
     Ok((value, &input[index..]))
 }
 
-pub fn parse_mem_in_kb(input: &String) -> Result<usize, FormatError>
-{
+pub fn parse_mem_in_kb(input: &String) -> Result<usize, FormatError> {
     let (value, rest) = take_numeric::<usize>(true, input)?;
     let multipier: usize = (match rest {
-        "K"|"KB"|"kb"|"Kb" => Ok(1),
-        "M"|"MB"|"mb"|"Mb" => Ok(1024),
-        "G"|"GB"|"gb"|"Gb" => Ok(1024 * 1024),
-        "T"|"TB"|"tb"|"Tb" => Ok(1024 * 1024 * 1024),
-        value => Err(FormatError::InvalidUnit(value.to_string()))
+        "K" | "KB" | "kb" | "Kb" => Ok(1),
+        "M" | "MB" | "mb" | "Mb" => Ok(1024),
+        "G" | "GB" | "gb" | "Gb" => Ok(1024 * 1024),
+        "T" | "TB" | "tb" | "Tb" => Ok(1024 * 1024 * 1024),
+        value => Err(FormatError::InvalidUnit(value.to_string())),
     })?;
 
     Ok(value * multipier)
