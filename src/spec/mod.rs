@@ -139,7 +139,8 @@ pub struct VmSpecMod {
     pub disable_mptable_gen: Option<bool>,
     pub extra_options:       Option<String>,
     pub next_target: Option<String>,
-    pub post_start_script: Option<String>
+    pub post_start_script: Option<String>,
+    pub graphic: Option<GraphicOption>,
 }
 
 macro_rules! replace_if_some {
@@ -176,6 +177,7 @@ impl VmSpec
         replace_if_some!(self, patch, ?extra_options);
         replace_if_some!(self, patch, ?next_target);
         replace_if_some!(self, patch, ?post_start_script);
+        replace_if_some!(self, patch, ?graphic);
 
         self.emulations.extend(patch.emulations.clone());
     }

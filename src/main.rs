@@ -59,7 +59,7 @@ struct Arguments {
     recover: bool,
 
     /// Print the bhyve command to stdout and exit
-    #[clap(short = 'D', long)]
+    #[clap(long)]
     dry_run: bool,
 
     /// Maximum number of reboots allowed, default unlimited
