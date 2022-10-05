@@ -11,8 +11,10 @@ pub fn exists_kld(file: &str) -> Option<bool> {
     unsafe {
         let c_str = std::ffi::CString::new(file).ok()?;
         match kldfind(c_str.as_ptr()) {
-            0 => Some(true),
-            _ => Some(false)
+            -1 => {
+                Some(false)
+            },
+            _ => Some(true)
         }
     }
 }
