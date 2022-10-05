@@ -195,27 +195,31 @@ impl BhyveDev for LpcDevice {
             },
             LpcDevice::Com(n, device) => {
                 let mut conditions = vec![];
-
+                // Bhyve so far support 3 com devices, com1 to com3
                 if let 1u8..=3 = n {} else {
                     conditions.push(GenericFatalCondition::new_boxed(
                         "invalid-com-number",
                         "only com[1-3] are supported"));
                 }
 
+                // In Bhyve, serial port is either stdio or path to a nmdm device
                 match device.as_str() {
                     "stdio" => (),
                     otherwise => {
-                        if otherwise.starts_with("nmdm") {
-                            conditions.push(KernelFeature::new_boxed("nmdm"));
-                        } else {
-                            conditions.push(GenericFatalCondition::new_boxed(
-                                "invalid-com-device",
-                                "com device must be either stdio or nmdm device"));
-                        }
+                        // nmdm devices always starts with "nmdm", we should not
+                        // assume the path is always under /dev as technically devfs
+                        // can be mounted everywhere
+                        let paths = otherwise.split('/').collect::<Vec<_>>();
+                        match paths.last() {
+                            Some(node) if node.starts_with("nmdm") =>
+                                conditions.push(KernelFeature::new_boxed("nmdm")),
+                            _ =>
+                                conditions.push(GenericFatalCondition::new_boxed(
+                                    "invalid-com-device",
+                                    "com device must be either stdio or nmdm device"))
+                        };
                     }
                 }
-
-
                 Box::new(NestedConditions { name: "lpc".to_string(), conditions })
             }
             _ => Box::new(NoCond {})
