@@ -10,7 +10,8 @@ The goal is to make bhyve
 *Another goal is to make bhyve more programmable and make vm manager easier to write by providing a crate.*
 
 ## Features
-
+- Helpful error messages
+  - Error messages are grouped by devices, for example missing a tap device or missing a file
 - Automatic slot assignment 
   - Only need to specify devices, this tool can figure out the slot assignment.
   - You can still specify which slot should the devices on.
@@ -24,6 +25,14 @@ The goal is to make bhyve
   - Automatically cleanup ephemeral resources left by bhyve. For example `*.sock` left by `virtio-console`
 
 *Limited UCL support by using `uclcmd` to provide JSON representation is also supported*
+
+## Installation
+```
+# build the utility in release mode
+cargo build --release
+# move it to /usr/local/bin
+mv ./target/release/vmrun /usr/local/bin/
+```
  
 ## Configuration
 **An example configuration will be:**
@@ -95,13 +104,6 @@ mostly because UCL itself is not currently a very consistent config format (try 
 An option `-d` or `--dry-run` is available to print out the equalivent bhyve command that will be executed. Error handling and error messages are currently lacking because this project is still very new (by the time of writing it is <1week old)
 
 The `--debug` option can also be used to print the parsed configuration.
-
-## Relation with `bhyve_config(5)`
-
-This utiltity uses the legacy bhyve config format instead of the new bhyve config file and config syntax. Not only this allows the utility to work with eariler verson of bhyve, it also makes debugging slightly easier due to the syntax being more compact and better documented.
-
-
-This is mostly due to the compactness (deof the old format, there when one run with `-d` or `--dry-run` can inspect a much shorter command; another main reason why the legacy config format is flavoured is to be compatbile with older bhyve release.
 
 ## More Documentation coming...
 
